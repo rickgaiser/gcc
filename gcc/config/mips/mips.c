@@ -51,6 +51,7 @@ Boston, MA 02111-1307, USA.  */
 #include "gstab.h"
 #include "hashtab.h"
 #include "debug.h"
+#include "optabs.h"
 #include "target.h"
 #include "target-def.h"
 
@@ -102,6 +103,7 @@ static rtx mips_frame_set			PARAMS ((enum machine_mode,
 							 int, int));
 static void mips_emit_frame_related_store	PARAMS ((rtx, rtx,
 							 HOST_WIDE_INT));
+static void mips_check_reg_mode			PARAMS ((rtx, rtx, void *));
 static void save_restore_insns			PARAMS ((int, rtx,
 							long, FILE *));
 static void mips16_output_gp_offset		PARAMS ((FILE *, rtx));
@@ -134,6 +136,23 @@ static hashval_t iris_section_align_entry_hash	PARAMS ((const PTR));
 static int iris6_section_align_1		PARAMS ((void **, void *));
 #endif
 static int mips_adjust_cost			PARAMS ((rtx, rtx, rtx, int));
+
+/* R5900 (Emotion Engine) support. */
+static enum sequence_type r5900_detect_sequence_type PARAMS ((rtx, int *, rtx *,
+							    int *, int));
+static void r5900_lengthen_loops		PARAMS ((rtx, int));
+static void r5900_sched_init			PARAMS ((void));
+static void mips_sched_init			PARAMS ((FILE *, int, int));
+static void r5900_sched_reorder			PARAMS ((FILE *, int, rtx *, int));
+static int mips_sched_reorder			PARAMS ((FILE *, int, rtx *,
+							int *, int));
+static void r5900_init_builtins			PARAMS ((void));
+static rtx r5900_expand_binop_builtin		PARAMS ((enum insn_code, tree,
+							rtx));
+static rtx r5900_expand_builtin			PARAMS ((tree, rtx));
+static rtx mips_expand_builtin			PARAMS ((tree, rtx, rtx,
+							enum machine_mode, int));
+static void mips_init_builtins			PARAMS ((void));
 
 /* Global variables for machine-dependent things.  */
 
@@ -232,6 +251,8 @@ int mips_isa;
 /* which abi to use.  */
 int mips_abi;
 
+int mips_alignment;
+
 /* Strings to hold which cpu and instruction set architecture to use.  */
 const char *mips_cpu_string;	/* for -mcpu=<xxx> */
 const char *mips_arch_string;   /* for -march=<xxx> */
@@ -252,6 +273,18 @@ const char *mips_no_mips16_string;
    explicitly specified (-mlong64, -mint64, -mlong32).  The specs
    set this option if such an option is used.  */
 const char *mips_explicit_type_size_string;
+
+#ifdef DEFAULT_MIPS_ALIGNMENT
+int mips_alignment=DEFAULT_MIPS_ALIGNMENT;	/* biggest alignment bits */
+#else
+int mips_alignment=BIGGEST_ALIGNMENT;		/* biggest alignment bits */
+#endif
+const char * mips_no_align128_string;
+const char * mips_align128_string;
+const char * mips_use_128_string;
+const char * mips_align_all_string;
+int mips_align_all = 1;
+int mips_use_128 = 0;
 
 /* Whether we are generating mips16 hard float code.  In mips16 mode
    we always set TARGET_SOFT_FLOAT; this variable is nonzero if
@@ -280,8 +313,11 @@ enum mips_abicalls_type mips_abicalls;
    initialized in override_options.  */
 REAL_VALUE_TYPE dfhigh, dflow, sfhigh, sflow;
 
-/* Mode used for saving/restoring general purpose registers.  */
-static enum machine_mode gpr_mode;
+/* The mode that will be used to save a given gpr on the stack.  Note
+   the entry for $0 is special; it indicates the generic size of a gpr
+   save/restore by the prologue/epilogue and must be the maximum mode
+   ever used to save a GPR.  This is typically WORD_MODE.  */
+enum machine_mode mips_reg_mode[GP_REG_NUM];
 
 /* Array giving truth value on whether or not a given hard register
    can support a given mode.  */
@@ -343,7 +379,8 @@ char mips_reg_names[][8] =
  "$f16", "$f17", "$f18", "$f19", "$f20", "$f21", "$f22", "$f23",
  "$f24", "$f25", "$f26", "$f27", "$f28", "$f29", "$f30", "$f31",
  "hi",   "lo",   "accum","$fcc0","$fcc1","$fcc2","$fcc3","$fcc4",
- "$fcc5","$fcc6","$fcc7","$rap"
+ "$fcc5","$fcc6","$fcc7","$rap",
+ "hi1",  "lo1",  "accum1"
 };
 
 /* Mips software names for the registers, used to overwrite the
@@ -360,7 +397,8 @@ static const char mips_sw_reg_names[][8] =
   "$f16", "$f17", "$f18", "$f19", "$f20", "$f21", "$f22", "$f23",
   "$f24", "$f25", "$f26", "$f27", "$f28", "$f29", "$f30", "$f31",
   "hi",   "lo",   "accum","$fcc0","$fcc1","$fcc2","$fcc3","$fcc4",
-  "$fcc5","$fcc6","$fcc7","$rap"
+  "$fcc5","$fcc6","$fcc7","$rap",
+  "hi1",  "lo1",  "accum1"
 };
 
 /* Map hard register number to register class */
@@ -384,7 +422,8 @@ const enum reg_class mips_regno_to_class[] =
   FP_REGS,	FP_REGS,	FP_REGS,	FP_REGS,
   HI_REG,	LO_REG,		HILO_REG,	ST_REGS,
   ST_REGS,	ST_REGS,	ST_REGS,	ST_REGS,
-  ST_REGS,	ST_REGS,	ST_REGS,	GR_REGS
+  ST_REGS,	ST_REGS,	ST_REGS,	GR_REGS,
+  HI1_REG,	LO1_REG,	HILO1_REG
 };
 
 /* Map register constraint character to register class.  */
@@ -478,6 +517,18 @@ enum reg_class mips_char_to_class[256] =
 
 #undef TARGET_SCHED_ADJUST_COST
 #define TARGET_SCHED_ADJUST_COST mips_adjust_cost
+
+#undef TARGET_SCHED_INIT
+#define TARGET_SCHED_INIT mips_sched_init
+
+#undef TARGET_SCHED_REORDER
+#define TARGET_SCHED_REORDER mips_sched_reorder
+
+#undef TARGET_INIT_BUILTINS
+#define TARGET_INIT_BUILTINS mips_init_builtins
+
+#undef TARGET_EXPAND_BUILTIN
+#define TARGET_EXPAND_BUILTIN mips_expand_builtin
 
 struct gcc_target targetm = TARGET_INITIALIZER;
 
@@ -1111,6 +1162,38 @@ movdi_operand (op, mode)
 		&& ! mips16_constant (op, mode, 1, 0)));
 }
 
+/* Return truth value of whether OP is a register, a memory operand, 
+   or a constant.  This is used by the r5900 lq/sq support.  */
+
+int
+movti_operand (op, mode)
+     rtx op;
+     enum machine_mode mode;
+{
+  switch (GET_CODE (op))
+    {
+    case CONST_INT:
+      if (TARGET_MIPS16)
+	return FALSE;
+      return TRUE;
+
+    case CONST_DOUBLE:
+      if (TARGET_MIPS16 || GET_MODE (op) != VOIDmode)
+	return FALSE;
+      return TRUE;
+
+    case REG:
+    case SUBREG:
+      return register_operand (op, mode);
+
+    case MEM:
+      return memory_operand (op, mode);
+
+    default:
+      return FALSE;
+    }
+}
+
 /* Like register_operand, but when in 64 bit mode also accept a sign
    extend of a 32 bit register, since the value is known to be already
    sign extended.  */
@@ -1315,6 +1398,7 @@ mips_legitimate_address_p (mode, xinsn, strict)
      accept (subreg (const_int)) which will fail to reload.  */
   if (CONSTANT_ADDRESS_P (xinsn)
       && ! (mips_split_addresses && mips_check_split (xinsn, mode))
+      && ! (TARGET_MIPS5900 && mode == TImode)
       && (! TARGET_MIPS16 || mips16_constant (xinsn, mode, 1, 0)))
     return 1;
 
@@ -1651,7 +1735,7 @@ mips_fill_delay_slot (ret, type, operands, cur_insn)
   if (type == DELAY_LOAD || type == DELAY_FCMP)
     num_nops = 1;
 
-  else if (type == DELAY_HILO)
+  else if (type == DELAY_HILO || type == DELAY_HILO1)
     num_nops = 2;
 
   else
@@ -1663,6 +1747,7 @@ mips_fill_delay_slot (ret, type, operands, cur_insn)
     next_insn = NEXT_INSN (next_insn);
 
   dslots_load_total += num_nops;
+
   if (TARGET_DEBUG_F_MODE
       || !optimize
       || type == DELAY_NONE
@@ -1700,6 +1785,11 @@ mips_fill_delay_slot (ret, type, operands, cur_insn)
     {
       mips_load_reg3 = gen_rtx_REG (SImode, MD_REG_FIRST);
       mips_load_reg4 = gen_rtx_REG (SImode, MD_REG_FIRST+1);
+    }
+  else if (type == DELAY_HILO1)
+    {
+      mips_load_reg3 = gen_rtx_REG (SImode, MD1_REG_FIRST);
+      mips_load_reg4 = gen_rtx_REG (SImode, MD1_REG_FIRST+1);
     }
   else
     {
@@ -1935,6 +2025,15 @@ mips_move_1word (operands, insn, unsignedp)
 		    ret = "mflo\t%0";
 		}
 
+	      else if (MD1_REG_P (regno1))
+		{
+		  delay = DELAY_HILO1;
+		  if (regno1 != HILO1_REGNUM)
+		    ret = "mf%1\t%0";
+		  else
+		    ret = "mflo1\t%0";
+		}
+
 	      else if (ST_REG_P (regno1) && ISA_HAS_8CC)
 		ret = "li\t%0,1\n\tmovf\t%0,%.,%1";
 
@@ -1967,6 +2066,16 @@ mips_move_1word (operands, insn, unsignedp)
 		{
 		  delay = DELAY_HILO;
 		  if (regno0 != HILO_REGNUM && ! TARGET_MIPS16)
+		    ret = "mt%0\t%1";
+		}
+	    }
+
+	  else if (MD1_REG_P (regno0))
+	    {
+	      if (GP_REG_P (regno1))
+		{
+		  delay = DELAY_HILO1;
+		  if (regno0 != HILO1_REGNUM && ! TARGET_MIPS16)
 		    ret = "mt%0\t%1";
 		}
 	    }
@@ -2054,6 +2163,12 @@ mips_move_1word (operands, insn, unsignedp)
 	      else if (MD_REG_P (regno0))
 		{
 		  delay = DELAY_HILO;
+		  ret = "mt%0\t%.";
+		}
+
+	      else if (MD1_REG_P (regno0))
+		{
+		  delay = DELAY_HILO1;
 		  ret = "mt%0\t%.";
 		}
 	    }
@@ -2390,6 +2505,20 @@ mips_move_2words (operands, insn)
 		ret = "mthi\t%M1\n\tmtlo\t%L1";
 	    }
 
+	  else if (MD1_REG_P (regno0) && GP_REG_P (regno1) && !TARGET_MIPS16)
+	    {
+	      delay = DELAY_HILO1;
+	      if (TARGET_64BIT)
+		{
+		  if (regno0 != HILO1_REGNUM)
+		    ret = "mt%0\t%1";
+		  else if (regno1 == 0)
+		    ret = "mtlo%H0\t%.\n\tmthi%H0\t%.";
+		}
+	      else
+		ret = "mthi%H0\t%M1\n\tmtlo%H0\t%L1";
+	    }
+
 	  else if (GP_REG_P (regno0) && MD_REG_P (regno1))
 	    {
 	      delay = DELAY_HILO;
@@ -2400,6 +2529,18 @@ mips_move_2words (operands, insn)
 		}
 	      else
 		ret = "mfhi\t%M0\n\tmflo\t%L0";
+	    }
+
+	  else if (GP_REG_P (regno0) && MD1_REG_P (regno1))
+	    {
+	      delay = DELAY_HILO1;
+	      if (TARGET_64BIT)
+		{
+		  if (regno1 != HILO1_REGNUM)
+		    ret = "mf%1\t%0";
+		}
+	      else
+		ret = "mfhi%H1\t%M0\n\tmflo%H1\t%L0";
 	    }
 
 	  else if (TARGET_64BIT)
@@ -2505,6 +2646,14 @@ mips_move_2words (operands, insn)
 	      delay = DELAY_HILO;
 	      ret =  (regno0 == HILO_REGNUM
 		      ? "mtlo\t%.\n\tmthi\t%."
+		      : "mt%0\t%.\n");
+	    }
+
+	  else if (MD1_REG_P (regno0))
+	    {
+	      delay = DELAY_HILO1;
+	      ret =  (regno0 == HILO1_REGNUM
+		      ? "mtlo%H0\t%.\n\tmthi%H0\t%."
 		      : "mt%0\t%.\n");
 	    }
 	}
@@ -3970,6 +4119,14 @@ function_arg_advance (cum, mode, type, named)
       cum->gp_reg_found = 1;
       cum->arg_words++;
       break;
+
+    case V16QImode:
+    case V8HImode:
+    case V4SImode:
+      if (! TARGET_MMI)
+	abort ();
+      cum->gp_reg_found = 1;
+      cum->arg_words++;
     }
 }
 
@@ -4090,6 +4247,15 @@ function_arg (cum, mode, type, named)
       if (! TARGET_64BIT)
 	cum->arg_words += (cum->arg_words & 1);
       regbase = GP_ARG_FIRST;
+      break;
+
+    case V4SImode:
+    case V8HImode:
+    case V16QImode:
+      if (! TARGET_MMI)
+	abort ();
+      regbase = GP_ARG_FIRST;
+
     }
 
   if (*arg_words >= (unsigned) MAX_ARGS_IN_REGISTERS)
@@ -4266,6 +4432,7 @@ function_arg_partial_nregs (cum, mode, type, named)
      int named ATTRIBUTE_UNUSED;/* != 0 for normal args, == 0 for ... args */
 {
   if ((mode == BLKmode
+       || (mode == TImode && TARGET_MIPS5900)
        || GET_MODE_CLASS (mode) != MODE_COMPLEX_INT
        || GET_MODE_CLASS (mode) != MODE_COMPLEX_FLOAT)
       && cum->arg_words < (unsigned) MAX_ARGS_IN_REGISTERS
@@ -4806,6 +4973,14 @@ override_options ()
     target_flags &= ~((TARGET_DEFAULT) & (MASK_SOFT_FLOAT | MASK_SINGLE_FLOAT));
 #endif
 
+  if (mips_align_all_string == 0)
+    mips_align_all = 1;
+
+  else if (ISDIGIT (*mips_align_all_string))
+    {
+      mips_align_all = atoi (mips_align_all_string);
+    }
+
   /* Get the architectural level.  */
   if (mips_isa_string == 0)
     mips_isa = MIPS_ISA_DEFAULT;
@@ -5036,6 +5211,10 @@ override_options ()
 	}
     }
 
+  /* Humf... */
+  if (mips_arch == PROCESSOR_R3000)
+    mips_isa = 1;
+
   /* make sure sizes of ints/longs/etc. are ok */
   if (! ISA_HAS_64BIT_REGS)
     {
@@ -5189,6 +5368,10 @@ override_options ()
   mips_char_to_class['l'] = LO_REG;
   mips_char_to_class['a'] = HILO_REG;
   mips_char_to_class['x'] = MD_REGS;
+  mips_char_to_class['u'] = HI1_REG;
+  mips_char_to_class['v'] = LO1_REG;
+  mips_char_to_class['q'] = HILO1_REG;
+  mips_char_to_class['w'] = MD1_REGS;
   mips_char_to_class['b'] = ALL_REGS;
   mips_char_to_class['y'] = GR_REGS;
   mips_char_to_class['z'] = ST_REGS;
@@ -5234,6 +5417,10 @@ override_options ()
 			|| FP_REG_P (regno));
 	    }
 
+	  /* General registers can hold TImode values on the r5900.  */
+	  else if (GP_REG_P (regno) && mode == TImode && TARGET_MIPS5900)
+	    temp = 1;
+
 	  else if (GP_REG_P (regno))
 	    temp = ((regno & 1) == 0 || size <= UNITS_PER_WORD);
 
@@ -5257,6 +5444,12 @@ override_options ()
 			|| (regno == MD_REG_FIRST
 			    && size == 2 * UNITS_PER_WORD)));
 
+	  else if (MD1_REG_P (regno))
+	    temp = (class == MODE_INT
+		    && (size <= UNITS_PER_WORD
+			|| (regno == MD1_REG_FIRST
+			    && size == 2 * UNITS_PER_WORD)));
+
 	  else
 	    temp = 0;
 
@@ -5266,9 +5459,18 @@ override_options ()
 
   /* Save GPR registers in word_mode sized hunks.  word_mode hasn't been
      initialized yet, so we can't use that here.  */
-  gpr_mode = TARGET_64BIT ? DImode : SImode;
+  for (regno = GP_REG_FIRST; regno <= GP_REG_LAST; regno++)
+    {
+      mips_reg_mode[regno] = TARGET_64BIT ? DImode : SImode;
+    }
+
+  /* Saves/restores of general purpose registers on the r5900 use
+     a mode wider than word_mode.  */
+  if (TARGET_MIPS5900)
+    mips_reg_mode[0] = TImode;
 
   /* Provide default values for align_* for 64-bit targets.  */
+  /* XXX: fix this up for the r5900. */
   if (TARGET_64BIT && !TARGET_MIPS16)
     {
       if (align_loops == 0)
@@ -5278,6 +5480,21 @@ override_options ()
       if (align_functions == 0)
 	align_functions = 8;
     }
+
+#ifdef DEFAULT_MIPS_ALIGNMENT
+  if (mips_align128_string != NULL) {
+	/* -malign128 */
+  	mips_alignment=128;
+  } 
+  if (mips_no_align128_string != NULL) {
+	/* -mno-align128 */
+  	mips_alignment=64;
+  }
+#endif
+
+  if (mips_use_128_string != NULL) {
+	mips_use_128=1;
+  }
 
   /* Register global variables with the garbage collector.  */
   mips_add_gc_roots ();
@@ -5380,6 +5597,7 @@ mips_debugger_offset (addr, offset)
    'M'  print high-order register of double-word register operand.
    'C'  print part of opcode for a branch condition.
    'F'  print part of opcode for a floating-point branch condition.
+   'H'  print the appropiate Integer pipe # for r5900 mult/div instructions.
    'N'  print part of opcode for a branch condition, inverted.
    'W'  print part of opcode for a floating-point branch condition, inverted.
    'S'  X is CODE_LABEL, print with prefix of "LS" (for embedded switch).
@@ -5604,7 +5822,17 @@ print_operand (file, op, letter)
       default:
 	abort_with_insn (op, "PRINT_OPERAND, invalid insn for %%W");
       }
+  else if (letter == 'H')
+    {
+      if (true_regnum (op) >= MD_REG_FIRST
+	       && true_regnum (op) <= MD_REG_LAST)
+	     ;
 
+      else if (true_regnum (op) >= MD1_REG_FIRST
+	       && true_regnum (op) <= MD1_REG_LAST)
+	fputs ("1", file);
+
+    }
   else if (letter == 'S')
     {
       char buffer[100];
@@ -5626,6 +5854,16 @@ print_operand (file, op, letter)
 
       if (regnum != ST_REG_FIRST)
 	fprintf (file, "%s,", reg_names[regnum]);
+    }
+
+  else if ((letter == 'L' || letter == 'M')
+	   && code == CONST_DOUBLE
+	   && GET_MODE (op) == VOIDmode)
+    {
+      if (letter == 'L')
+	fprintf (file, HOST_WIDE_INT_PRINT_HEX, CONST_DOUBLE_LOW (op));
+      else
+	fprintf (file, HOST_WIDE_INT_PRINT_HEX, CONST_DOUBLE_HIGH (op));
     }
 
   else if (code == REG || code == SUBREG)
@@ -6099,8 +6337,7 @@ final_prescan_insn (insn, opvec, noperands)
 	  || (mips_load_reg != 0 && reg_mentioned_p (mips_load_reg,  pattern))
 	  || (mips_load_reg2 != 0 && reg_mentioned_p (mips_load_reg2, pattern))
 	  || (mips_load_reg3 != 0 && reg_mentioned_p (mips_load_reg3, pattern))
-	  || (mips_load_reg4 != 0
-	      && reg_mentioned_p (mips_load_reg4, pattern)))
+	  || (mips_load_reg4 != 0 && reg_mentioned_p (mips_load_reg4, pattern)))
 	fputs ("\t#nop\n", asm_out_file);
 
       else
@@ -6298,6 +6535,27 @@ mips_declare_object (stream, name, init_string, final_string, size)
     }
 }
 
+void
+mips_declare_object_align (stream, name, init_string, final_string, size, align)
+     FILE *stream;
+     const char *name;
+     const char *init_string;
+     const char *final_string;
+     int size;
+     int align;
+{
+  fputs (init_string, stream);		/* "", "\t.comm\t", or "\t.lcomm\t" */
+  assemble_name (stream, name);
+  fprintf (stream, final_string, size, align);	/* ":\n", ",%u\n", ",%u\n" */
+
+  if (TARGET_GP_OPT)
+    {
+      tree name_tree = get_identifier (name);
+      TREE_ASM_WRITTEN (name_tree) = 1;
+    }
+}
+
+
 /* Return the bytes needed to compute the frame pointer from the current
    stack pointer.
 
@@ -6410,7 +6668,7 @@ compute_frame_size (size)
 		  || (GET_MODE_SIZE (DECL_MODE (DECL_RESULT (current_function_decl)))
 		      <= 4))))
 	{
-	  gp_reg_size += GET_MODE_SIZE (gpr_mode);
+	  gp_reg_size += GET_MODE_SIZE (mips_reg_mode[0]);
 	  mask |= 1L << (regno - GP_REG_FIRST);
 
 	  /* The entry and exit pseudo instructions can not save $17
@@ -6434,7 +6692,7 @@ compute_frame_size (size)
 	  regno = EH_RETURN_DATA_REGNO (i);
 	  if (regno == INVALID_REGNUM)
 	    break;
-	  gp_reg_size += GET_MODE_SIZE (gpr_mode);
+	  gp_reg_size += GET_MODE_SIZE (mips_reg_mode[0]);
 	  mask |= 1L << (regno - GP_REG_FIRST);
 	}
     }
@@ -6516,9 +6774,9 @@ compute_frame_size (size)
          top of the stack.  */
       if (! mips_entry)
 	offset = (args_size + extra_size + var_size
-		  + gp_reg_size - GET_MODE_SIZE (gpr_mode));
+		  + gp_reg_size - GET_MODE_SIZE (mips_reg_mode[0]));
       else
-	offset = total_size - GET_MODE_SIZE (gpr_mode);
+	offset = total_size - GET_MODE_SIZE (mips_reg_mode[0]);
 
       current_frame_info.gp_sp_offset = offset;
       current_frame_info.gp_save_offset = offset - total_size;
@@ -6654,6 +6912,24 @@ mips_emit_frame_related_store (mem, reg, offset)
   mips_annotate_frame_insn (emit_move_insn (mem, reg), dwarf_expr);
 }
 
+/* If modifying X uses a larger mode than in mips_reg_mode,
+   indicate that fact by setting mips_reg_mode.  */
+
+static void
+mips_check_reg_mode (x, set, data)
+     rtx x;
+     rtx set ATTRIBUTE_UNUSED;
+     void *data ATTRIBUTE_UNUSED;
+{
+  if (GET_CODE (x) == REG 
+      && REGNO (x) <= GP_REG_LAST
+      && (GET_MODE_SIZE (GET_MODE (x))
+	  > GET_MODE_SIZE (mips_reg_mode[REGNO (x)])))
+    {
+      mips_reg_mode[REGNO (x)] = GET_MODE (x);
+    }
+}
+
 static void
 save_restore_insns (store_p, large_reg, large_offset, file)
      int store_p;	/* true if this is prologue */
@@ -6690,6 +6966,47 @@ save_restore_insns (store_p, large_reg, large_offset, file)
      need a nop in the epilog if at least one register is reloaded in
      addition to return address.  */
 
+  if (TARGET_MIPS5900 && store_p)
+    {
+      rtx insn;
+      tree attr;
+
+      for (insn = get_insns (); insn != NULL_RTX; insn = NEXT_INSN (insn))
+	{
+	  if (GET_RTX_CLASS (GET_CODE (insn)) == 'i')
+	    note_stores (PATTERN (insn), mips_check_reg_mode, NULL);
+	}
+
+      if ((attr = lookup_attribute
+	   ("register_precision", DECL_ATTRIBUTES (current_function_decl)))
+	  != 0)
+	for (; attr; attr = TREE_CHAIN (attr))
+	  {
+	    const char *reg_expr = IDENTIFIER_POINTER (TREE_VALUE (TREE_VALUE (attr)));
+	    tree reg_length = TREE_VALUE (TREE_CHAIN (TREE_VALUE (attr)));
+	    enum machine_mode mode = VOIDmode;
+	    int j;
+	    switch (TREE_INT_CST_LOW (reg_length))
+	      {
+	      case 32:
+		mode= SImode;
+		break;
+	      case 64:
+		mode= DImode;
+		break;
+	      case 128:
+		mode= TImode;
+		break;
+	      }
+
+	    if ((j = decode_reg_name (reg_expr)) >= 0)
+	      {
+		if (j != 0)
+		  mips_reg_mode[j] = mode;
+	      }
+	  }
+    }
+
   /* Save GP registers if needed.  */
   if (mask)
     {
@@ -6702,7 +7019,7 @@ save_restore_insns (store_p, large_reg, large_offset, file)
       gp_offset = current_frame_info.gp_sp_offset;
       end_offset
 	= gp_offset - (current_frame_info.gp_reg_size
-		       - GET_MODE_SIZE (gpr_mode));
+		       - GET_MODE_SIZE (mips_reg_mode[0]));
 
       if (gp_offset < 0 || end_offset < 0)
 	internal_error
@@ -6765,7 +7082,8 @@ save_restore_insns (store_p, large_reg, large_offset, file)
 	      {
 		rtx reg_rtx;
 		rtx mem_rtx
-		  = gen_rtx (MEM, gpr_mode,
+		  = gen_rtx (MEM,
+			     mips_reg_mode[regno],
 			     gen_rtx (PLUS, Pmode, base_reg_rtx,
 				      GEN_INT (gp_offset - base_offset)));
 
@@ -6776,23 +7094,24 @@ save_restore_insns (store_p, large_reg, large_offset, file)
                    $31, so we load $7 instead, and work things out
                    in mips_expand_epilogue.  */
 		if (TARGET_MIPS16 && ! store_p && regno == GP_REG_FIRST + 31)
-		  reg_rtx = gen_rtx (REG, gpr_mode, GP_REG_FIRST + 7);
+		  reg_rtx = gen_rtx (REG, mips_reg_mode[7], GP_REG_FIRST + 7);
 		/* The mips16 sometimes needs to save $18.  */
 		else if (TARGET_MIPS16
 			 && regno != GP_REG_FIRST + 31
 			 && ! M16_REG_P (regno))
 		  {
 		    if (! store_p)
-		      reg_rtx = gen_rtx (REG, gpr_mode, 6);
+		      reg_rtx = gen_rtx (REG, mips_reg_mode[6], 6);
 		    else
 		      {
-			reg_rtx = gen_rtx (REG, gpr_mode, 3);
+			reg_rtx = gen_rtx (REG, mips_reg_mode[3], 3);
 			emit_move_insn (reg_rtx,
-					gen_rtx (REG, gpr_mode, regno));
+					gen_rtx (REG, mips_reg_mode[regno],
+						 regno));
 		      }
 		  }
 		else
-		  reg_rtx = gen_rtx (REG, gpr_mode, regno);
+		  reg_rtx = gen_rtx (REG, mips_reg_mode[regno], regno);
 
 		if (store_p)
 		  mips_emit_frame_related_store (mem_rtx, reg_rtx, gp_offset);
@@ -6802,7 +7121,7 @@ save_restore_insns (store_p, large_reg, large_offset, file)
 		    if (TARGET_MIPS16
 			&& regno != GP_REG_FIRST + 31
 			&& ! M16_REG_P (regno))
-		      emit_move_insn (gen_rtx (REG, gpr_mode, regno),
+		      emit_move_insn (gen_rtx (REG, mips_reg_mode[regno], regno),
 				      reg_rtx);
 		  }
 	      }
@@ -6844,13 +7163,13 @@ save_restore_insns (store_p, large_reg, large_offset, file)
 		  fprintf (file, "\tmove\t%s,%s\n",
 			   reg_names[regno], reg_names[r]);
 	      }
-	    gp_offset -= GET_MODE_SIZE (gpr_mode);
+	    gp_offset -= GET_MODE_SIZE (mips_reg_mode[0]);
 	  }
         /* If the restore is being supressed, still take into account
 	   the offset at which it is stored.  */
  	else if (BITSET_P (real_mask, regno - GP_REG_FIRST))
  	  {
-	    gp_offset -= GET_MODE_SIZE (gpr_mode);
+	    gp_offset -= GET_MODE_SIZE (mips_reg_mode[0]);
 	  }
     }
   else
@@ -6875,13 +7194,13 @@ save_restore_insns (store_p, large_reg, large_offset, file)
 	base_reg_rtx = stack_pointer_rtx, base_offset  = 0;
 
       else if (base_reg_rtx != 0
-	       && (unsigned HOST_WIDE_INT) (base_offset - fp_offset) < 32768
-	       && (unsigned HOST_WIDE_INT) (base_offset - end_offset) < 32768)
+	       && (((unsigned HOST_WIDE_INT) (base_offset - fp_offset)) < 32768)
+	       && (((unsigned HOST_WIDE_INT) (base_offset - end_offset)) < 32768))
 	;			/* already set up for gp registers above */
 
       else if (large_reg != 0
-	       && (unsigned HOST_WIDE_INT) (large_offset - fp_offset) < 32768
-	       && (unsigned HOST_WIDE_INT) (large_offset - end_offset) < 32768)
+	       && (((unsigned HOST_WIDE_INT) (large_offset - fp_offset)) < 32768)
+	       && (((unsigned HOST_WIDE_INT) (large_offset - end_offset)) < 32768))
 	{
 	  base_reg_rtx = gen_rtx_REG (Pmode, MIPS_TEMP2_REGNUM);
 	  base_offset = large_offset;
@@ -7313,10 +7632,10 @@ mips_expand_prologue ()
 	{
 	  if (offset != 0)
 	    ptr = gen_rtx (PLUS, Pmode, stack_pointer_rtx, GEN_INT (offset));
-	  emit_move_insn (gen_rtx (MEM, gpr_mode, ptr),
-			  gen_rtx (REG, gpr_mode, regno));
+	  emit_move_insn (gen_rtx (MEM, mips_reg_mode[regno], ptr),
+			  gen_rtx (REG, mips_reg_mode[regno], regno));
 
-	  offset += GET_MODE_SIZE (gpr_mode);
+	  offset += GET_MODE_SIZE (mips_reg_mode[0]);
 	}
     }
 
@@ -7361,7 +7680,8 @@ mips_expand_prologue ()
 	 moment.  */
       if (TARGET_MIPS16 && BITSET_P (current_frame_info.mask, 18))
 	{
-	  rtx reg_rtx = gen_rtx (REG, gpr_mode, GP_REG_FIRST + 3);
+	  rtx reg_rtx = gen_rtx (REG, mips_reg_mode[GP_REG_FIRST + 3],
+			  	 GP_REG_FIRST + 3);
 	  long gp_offset, base_offset;
 
 	  gp_offset = current_frame_info.gp_sp_offset;
@@ -7377,8 +7697,9 @@ mips_expand_prologue ()
 	    base_offset = 0;
 	  start_sequence ();
 	  emit_move_insn (reg_rtx,
-			  gen_rtx (REG, gpr_mode, GP_REG_FIRST + 18));
-	  emit_move_insn (gen_rtx (MEM, gpr_mode,
+			  gen_rtx (REG, mips_reg_mode[GP_REG_FIRST + 18],
+				   GP_REG_FIRST + 18));
+	  emit_move_insn (gen_rtx (MEM, mips_reg_mode[GP_REG_FIRST + 18],
 				   gen_rtx (PLUS, Pmode, stack_pointer_rtx,
 					    GEN_INT (gp_offset
 						     - base_offset))),
@@ -8108,6 +8429,11 @@ function_arg_pass_by_reference (cum, mode, type, named)
   if (type == NULL_TREE || mode == DImode || mode == DFmode)
     return 0;
 
+  /* The r5900 can pass TImode values in a single register, so
+     there is no need to pass it by reference.  */
+  if (mode == TImode && TARGET_MIPS5900)
+    return 0;
+
   size = int_size_in_bytes (type);
   return size == -1 || size > UNITS_PER_WORD;
 }
@@ -8168,7 +8494,20 @@ mips_secondary_reload_class (class, mode, x, in_p)
 	     && gp_reg_p
 	     && GET_MODE_SIZE (mode) <= GET_MODE_SIZE (SImode))
 	    ? NO_REGS : gr_regs);
+
+  else if (class == HILO1_REG && regno != GP_REG_FIRST + 0)
+    return ((! in_p
+	     && gp_reg_p
+	     && GET_MODE_SIZE (mode) <= GET_MODE_SIZE (SImode))
+	    ? NO_REGS : gr_regs);
+
   else if (regno == HILO_REGNUM)
+    return ((in_p
+	     && class == gr_regs
+	     && GET_MODE_SIZE (mode) <= GET_MODE_SIZE (SImode))
+	    ? NO_REGS : gr_regs);
+
+  else if (regno == HILO1_REGNUM)
     return ((in_p
 	     && class == gr_regs
 	     && GET_MODE_SIZE (mode) <= GET_MODE_SIZE (SImode))
@@ -8176,7 +8515,9 @@ mips_secondary_reload_class (class, mode, x, in_p)
 
   /* Copying from HI or LO to anywhere other than a general register
      requires a general register.  */
-  if (class == HI_REG || class == LO_REG || class == MD_REGS)
+
+  if (class == HI_REG  || class == LO_REG  || class == MD_REGS
+   || class == HI1_REG || class == LO1_REG || class == MD1_REGS)
     {
       if (TARGET_MIPS16 && in_p)
 	{
@@ -8185,7 +8526,8 @@ mips_secondary_reload_class (class, mode, x, in_p)
 	}
       return gp_reg_p ? NO_REGS : gr_regs;
     }
-  if (MD_REG_P (regno))
+
+  if (MD_REG_P (regno) || MD1_REG_P (regno))
     {
       if (TARGET_MIPS16 && ! in_p)
 	{
@@ -9344,6 +9686,11 @@ machine_dependent_reorg (first)
   if (! TARGET_MIPS16)
     return;
 
+#ifdef FILL_BDSLOT_WITH_NOP
+  if (TARGET_MIPS5900 && !TARGET_NO_LENGTHEN_LOOP)
+    r5900_lengthen_loops (first,0);
+#endif
+
   /* If $gp is used, try to remove stores, and replace loads with
      copies from $gp.  */
   if (optimize)
@@ -9531,6 +9878,205 @@ machine_dependent_reorg (first)
   /* ??? If we output all references to a constant in internal
      constants table, we don't need to output the constant in the real
      constant table, but we have no way to prevent that.  */
+}
+
+
+/* On the R5900, we must ensure that the compiler never generates loops
+   that satisfy all of the following conditions:
+   
+   * a loop consists of less than equal to six instructions (including the
+     branch delay slot).
+   
+   * a loop contains only one conditional branch instruction at the
+     end of the loop.
+     
+   * a loop does not contain any other branch or jump instructions.
+
+   * a branch delay slot of the loop is not nop. ( EE#2.9 or later )
+
+   We need to do this because of a bug in the chip.
+
+   */
+
+#define NOP_INSN_P(INSN) (rtx_equal_p (INSN, gen_nop ()))
+
+enum sequence_type {Jump, Reset, Other};
+
+/* Detect if possible loop jump presents in the sequence */
+
+static enum sequence_type 
+r5900_detect_sequence_type (insn, count_p, jump_insn_p, seen_before, 
+			after_delayed_branch_sched)
+	rtx insn;
+	int *count_p;
+	rtx *jump_insn_p;
+	int *seen_before;
+	int after_delayed_branch_sched;
+{
+  int i;
+  int detect_later = 0;
+
+  for (i = 0; i < XVECLEN (PATTERN (insn), 0); i++)
+    {
+      rtx v_insn;
+      v_insn = XVECEXP (PATTERN (insn), 0, i);
+
+      switch (GET_CODE (v_insn))
+        {
+	case CODE_LABEL:
+	  seen_before [INSN_UID (v_insn)] = *count_p;
+	  break;
+	case INSN:
+	  /* The attr_length may be bigger than acctual insn length.
+	     So don't use it in the after_delayed_branch_sched phase. */
+	  *count_p  += ( get_attr_length (insn) > 0 
+			&& !after_delayed_branch_sched ) 
+		        ?  get_attr_length (insn) : 4 ; 
+	  if (detect_later)
+	    {
+	      /* inspect BD slot */
+	      if (NOP_INSN_P (PATTERN (v_insn)))
+		return Reset;
+	      return Jump;
+	    }
+	  break;
+	case JUMP_INSN:
+	  *jump_insn_p = v_insn;
+	  detect_later = 1;
+	  break;
+	case CALL_INSN:
+	  return Reset;
+	  break;
+	default:
+	  break;
+	}
+    }
+
+  if (detect_later) 
+    /* Since there's no instruction in the delay slot, the assembler will
+       insert a "nop" later.  */
+    return  Reset;
+
+  return Other;
+}
+
+/* XXX: Fix this.  */
+
+static void
+r5900_lengthen_loops (first, after_delayed_branch_sched)
+  rtx first;
+  int after_delayed_branch_sched;
+{
+  rtx insn;
+  rtx this_jump_insn;
+  const int hazardous_distance = 6;
+  int n = 4;
+  int max_uid = get_max_uid ();
+  int *seen_before = alloca (sizeof seen_before[0] * max_uid);
+  int in_sequence = 0;
+  enum sequence_type result;
+
+  /*bzero ((char *) seen_before, sizeof seen_before[0] * max_uid);*/
+  memset((char *) seen_before, 0, sizeof seen_before[0] * max_uid);
+      
+  for (insn = first; insn; insn = NEXT_INSN (insn))
+    {
+      in_sequence = 0;
+      switch (GET_CODE (insn))
+	{
+	case CODE_LABEL:
+	  seen_before [INSN_UID (insn)] = n;
+	  break;
+
+	case INSN:
+	  if (GET_CODE (PATTERN (insn)) != SEQUENCE ) 
+	    {
+	      /* The attr_length may be bigger than acctual insn length.
+	         So don't use it in the after_delayed_branch_sched phase. */
+	      n += ( get_attr_length (insn) > 0 
+	            && !after_delayed_branch_sched ) 
+		 ?  get_attr_length (insn) : 4 ; 
+	      break;
+	    }
+	  result = r5900_detect_sequence_type(insn, &n, &this_jump_insn, 
+				  seen_before, after_delayed_branch_sched);
+	  switch(result) 
+	    {
+	    case Reset:
+	      goto reset;
+	    case Jump:
+	      in_sequence=1;
+	      goto jump_insn;
+	    case Other:
+	    default:
+	      break;
+	    }
+	  break;
+
+	case JUMP_INSN:
+          this_jump_insn = insn;
+	  in_sequence=0;
+      jump_insn:
+	  if (condjump_p (this_jump_insn))
+	    {
+	      rtx target = condjump_label (this_jump_insn);
+
+	      if (seen_before [INSN_UID (XEXP (target, 0))])
+		{
+		  int distance 
+		    = (n - seen_before [INSN_UID (XEXP (target, 0))]) >> 2;
+
+		  if (!in_sequence) 
+		    {
+		    /* try to insert one nop before jump 
+		     * if distance is in hazardous_distance */
+
+	 	    if  ( distance <=  hazardous_distance )
+		      {
+		        rtx prev_insn = PREV_INSN (this_jump_insn);
+		        while ( prev_insn && ( GET_CODE (prev_insn) != INSN ))
+			    prev_insn =  PREV_INSN (prev_insn);
+			if (prev_insn && ! NOP_INSN_P (PATTERN (prev_insn)))
+			      emit_insn_before (gen_nop (), this_jump_insn);
+
+		      }
+		    }
+		  else 
+		    {
+		      if ( distance <= hazardous_distance ) 
+		        {
+	     	          for (; distance <= hazardous_distance; distance++) 
+		            emit_insn_before (gen_nop(), insn);
+		        }
+		    }
+		}
+	    }
+
+	  /* Falls through */
+
+	case CALL_INSN:
+      reset:
+	  /*bzero ((char *) seen_before, sizeof seen_before[0] * max_uid);*/
+          memset((char *) seen_before, 0, sizeof seen_before[0] * max_uid);
+	  break;
+	    
+	default:
+	  break;
+	}
+    }
+}
+ 
+/* Exported to toplev.c.
+
+   Do a final pass over the function, just before rtl to asm conversion
+   (after "delayed branch scheduling" and "shorten jump").  */
+
+void
+machine_dependent_reorg_final (first)
+     rtx first;
+{
+  if (TARGET_MIPS5900 && ! TARGET_NO_LENGTHEN_LOOP)
+    r5900_lengthen_loops (first, 1);
 }
 
 /* Return nonzero if X is a SIGN or ZERO extend operator.  */
@@ -9933,6 +10479,8 @@ mips_parse_cpu (cpu_string)
     case '5':
       if (!strcmp (p, "5000") || !strcmp (p, "5k") || !strcmp (p, "5K"))
 	cpu = PROCESSOR_R5000;
+      else if (!strcmp (p, "5900"))
+	cpu = PROCESSOR_R5900;
       else if (!strcmp (p, "5kc") || !strcmp (p, "5Kc") )
           cpu = PROCESSOR_R5KC;
       break;
@@ -10057,7 +10605,10 @@ mips_hard_regno_nregs (regno, mode)
     int regno;
     enum machine_mode mode;
 {
-  if (! FP_REG_P (regno))
+  /* TODO: Add r5900 dual mode register support. */
+  if (TARGET_MIPS5900 && GP_REG_P (regno) && mode == TImode)
+    return 1;
+  else if (! FP_REG_P (regno))
     return ((GET_MODE_SIZE (mode) + UNITS_PER_WORD - 1) / UNITS_PER_WORD);
   else
     return ((GET_MODE_SIZE (mode) + UNITS_PER_FPREG - 1) / UNITS_PER_FPREG);
@@ -10223,3 +10774,345 @@ iris6_asm_file_end (stream)
   mips_asm_file_end (stream);
 }
 #endif /* TARGET_IRIX6 */
+
+static void
+r5900_sched_init ()
+{
+}
+
+static void
+mips_sched_init (dump, sched_verbose, veclen)
+     FILE *dump ATTRIBUTE_UNUSED;
+     int sched_verbose ATTRIBUTE_UNUSED;
+     int veclen ATTRIBUTE_UNUSED;
+{
+  if (TARGET_MIPS5900)
+    r5900_sched_init ();
+}
+
+static void
+r5900_sched_reorder (dump, sched_verbose, ready, n_ready)
+     FILE *dump;
+     int sched_verbose;
+     rtx *ready;
+     int n_ready;
+{
+  static int imuldivunit = -1;
+
+  return;
+  /* There is also no point in trying these tweaks after reload has
+     completed.  */
+  if (reload_completed)
+    return;
+
+  /* If there are less than three insns on the queue, then there's nothing
+     to do.  */
+  if (n_ready < 3)
+    return;
+
+  /* We need to know what value will be returned by function_units_used for
+     the r5900's multiply/divide units.  If we have not computed it yet,
+     do so now.  */
+  if (imuldivunit == -1)
+    {
+      int i;
+
+      for (i = 0; i < FUNCTION_UNITS_SIZE; i++)
+	{
+	  if (!strcmp ("r5900imuldiv", function_units[i].name))
+	    {
+	      imuldivunit = i;
+	      break;
+	    }
+	}
+      if (imuldivunit == -1)
+	return;
+    }
+
+    {
+      int i;
+
+      /* Loop through the instructions and try to pair up two instructions
+	 which use the imuldiv pipelines.
+
+	 We want such instructions to appear back to back in the RTL chain
+	 so that the register allocator will allocate a different HILO
+	 register for the two imuldiv instructions.
+
+	 Note the ready list is ordered backwards. 
+
+	 If we do not find an idivmul insn which could issue this cycle, quit
+	 to save time.  */
+      for (i = n_ready - 1; i >= n_ready - 2; i--)
+	{
+	  rtx insn = ready[i];
+	  enum rtx_code code;
+
+	  /* Ignore anything we do not understand.  */
+	  if (GET_RTX_CLASS (GET_CODE (insn)) != 'i'
+	      || (code = GET_CODE (PATTERN (insn))) == USE
+	      || code == CLOBBER || code == ADDR_VEC)
+	    continue;
+	  else
+	    {
+	      /* We are looking for instructions that issue to the imuldiv
+		 pipelines.  */
+	      if (function_units_used (insn) == imuldivunit)
+		{
+		  int j;
+
+		  /* We have found one insn that uses the imuldiv pipeline, so
+		     now look for another imuldiv instruction.  */
+		  for (j = i - 1; j >= 0; j--)
+		    {
+		      rtx temp = ready[j];
+
+		      /* Ignore anything we do not understand.  */
+		      if (GET_RTX_CLASS (GET_CODE (temp)) != 'i'
+			  || (code = GET_CODE (PATTERN (temp))) == USE
+			  || code == CLOBBER || code == ADDR_VEC)
+			continue;
+
+		      /* Again, we are looking for an imuldiv insn.  */
+		      if (function_units_used (temp) == imuldivunit)
+			{
+
+			  /* Make the idivmul insns consecutive if they were
+			     not already consecutive.  */
+			  if (i - j != 1)
+			    {
+			      rtx temp = ready[j];
+			      /*bcopy (&ready[j+1], &ready[j],
+				       (i - j - 1) * sizeof (rtx *));*/
+			      memcpy(&ready[j], &ready[j+1], (i - j - 1) * sizeof (rtx *));
+			      ready[i - 1] = temp;
+			    }
+
+			  /* Now the imuldiv insns are consecutive.  We can
+			     still lose if they issue at different clocks, so
+			     move them as a pair to the head of ready list. 
+
+			     Note I must either be the head of the queue or
+			     the second insn in the queue.  */
+			  if (i != n_ready - 1)
+			    {
+			      rtx temp1, temp2;
+
+			      /* Rotate the first three elements in the
+				 ready queue.  */
+			      temp1 = ready[n_ready - 1];
+			      temp2 = ready[n_ready - 2];
+			      ready[n_ready - 2] = ready[n_ready - 3];
+			      ready[n_ready - 3] = temp1;
+			      ready[n_ready - 1] = temp2;
+			    }
+			  return;
+			}
+		    }
+		}
+	    }
+	}
+    }
+}
+
+/* Reorder the ready list as needed to improve performance.  */
+
+static int
+mips_sched_reorder (dump, sched_verbose, ready, n_readyp, clock_var)
+     FILE *dump ATTRIBUTE_UNUSED;
+     int sched_verbose ATTRIBUTE_UNUSED;
+     rtx *ready;
+     int *n_readyp;
+     int clock_var ATTRIBUTE_UNUSED;
+{
+  if (TARGET_MIPS5900)
+    r5900_sched_reorder (dump, sched_verbose, ready, *n_readyp);
+  return ISSUE_RATE;
+}
+
+/* R5900 built-ins support.  This is largely based off of the ix86 SSE/MMX
+   and rs6000 Altivec implementations. */
+
+#define def_builtin(MASK, NAME, TYPE, CODE)				\
+do {									\
+  if ((MASK) & target_flags) 						\
+    builtin_function ((NAME), (TYPE), (CODE), BUILT_IN_MD, NULL);	\
+} while (0)
+
+struct builtin_description
+{
+  const unsigned int mask;
+  const enum insn_code icode;
+  const char *const name;
+  const enum r5900_builtins code;
+};
+
+/* Builtins that take 2 arguments. */
+static struct builtin_description bdesc_2arg[] =
+{
+  { MASK_MMI, CODE_FOR_addv16qi3,   "__builtin_mmi_paddb", MMI_BUILTIN_PADDB },
+  { MASK_MMI, CODE_FOR_addv8hi3,    "__builtin_mmi_paddh", MMI_BUILTIN_PADDH },
+  { MASK_MMI, CODE_FOR_addv4si3,    "__builtin_mmi_paddw", MMI_BUILTIN_PADDW },
+  { MASK_MMI, CODE_FOR_ssaddv16qi3, "__builtin_mmi_paddsb", MMI_BUILTIN_PADDSB },
+  { MASK_MMI, CODE_FOR_ssaddv8hi3,  "__builtin_mmi_paddsh", MMI_BUILTIN_PADDSW },
+  { MASK_MMI, CODE_FOR_ssaddv4si3,  "__builtin_mmi_paddsw", MMI_BUILTIN_PADDSH },
+  { MASK_MMI, CODE_FOR_usaddv16qi3, "__builtin_mmi_paddub", MMI_BUILTIN_PADDUB },
+  { MASK_MMI, CODE_FOR_usaddv8hi3,  "__builtin_mmi_padduh", MMI_BUILTIN_PADDUW },
+  { MASK_MMI, CODE_FOR_usaddv4si3,  "__builtin_mmi_padduw", MMI_BUILTIN_PADDUH },
+
+  { MASK_MMI, CODE_FOR_subv16qi3,   "__builtin_mmi_psubb", MMI_BUILTIN_PSUBB },
+  { MASK_MMI, CODE_FOR_subv8hi3,    "__builtin_mmi_psubh", MMI_BUILTIN_PSUBH },
+  { MASK_MMI, CODE_FOR_subv4si3,    "__builtin_mmi_psubw", MMI_BUILTIN_PSUBW },
+  { MASK_MMI, CODE_FOR_sssubv16qi3, "__builtin_mmi_psubsb", MMI_BUILTIN_PSUBSB },
+  { MASK_MMI, CODE_FOR_sssubv8hi3,  "__builtin_mmi_psubsh", MMI_BUILTIN_PSUBSW },
+  { MASK_MMI, CODE_FOR_sssubv4si3,  "__builtin_mmi_psubsw", MMI_BUILTIN_PSUBSH },
+  { MASK_MMI, CODE_FOR_ussubv16qi3, "__builtin_mmi_psubub", MMI_BUILTIN_PSUBUB },
+  { MASK_MMI, CODE_FOR_ussubv8hi3,  "__builtin_mmi_psubuh", MMI_BUILTIN_PSUBUW },
+  { MASK_MMI, CODE_FOR_ussubv4si3,  "__builtin_mmi_psubuw", MMI_BUILTIN_PSUBUH },
+
+};
+
+/* Expand all r5900-specific builtins.  This is only called if TARGET_MMI or
+   TARGET_VUMM are true.  */
+static void
+r5900_init_builtins()
+{
+  struct builtin_description *d;
+  size_t i;
+  tree endlink = void_list_node;
+
+  /* Normal vector binops. */
+  tree v16qi_ftype_v16qi_v16qi
+    = build_function_type (V16QI_type_node,
+		    	   tree_cons (NULL_TREE, V16QI_type_node,
+				      tree_cons (NULL_TREE, V16QI_type_node,
+					         endlink)));
+
+  tree v8hi_ftype_v8hi_v8hi
+    = build_function_type (V8HI_type_node,
+		    	   tree_cons (NULL_TREE, V8HI_type_node,
+				      tree_cons (NULL_TREE, V8HI_type_node,
+					         endlink)));
+
+  tree v4si_ftype_v4si_v4si
+    = build_function_type (V4SI_type_node,
+		    	   tree_cons (NULL_TREE, V4SI_type_node,
+				      tree_cons (NULL_TREE, V4SI_type_node,
+					         endlink)));
+
+  tree ti_ftype_ti_ti
+    = build_function_type (intTI_type_node,
+		    	   tree_cons (NULL_TREE, intTI_type_node,
+				      tree_cons (NULL_TREE, intTI_type_node,
+					         endlink)));
+
+  /* Add all builtins that are simple binary operations. */
+  for (i = 0, d = bdesc_2arg; i < sizeof (bdesc_2arg) / sizeof *d; i++, d++)
+    {
+      enum machine_mode mode;
+      tree type;
+
+      if (d->name == 0)
+	continue;
+      mode = insn_data[d->icode].operand[1].mode;
+
+      switch (mode)
+        {
+	case V16QImode:
+	  type = v16qi_ftype_v16qi_v16qi;
+	  break;
+	case V8HImode:
+	  type = v8hi_ftype_v8hi_v8hi;
+	case V4SImode:
+	  type = v4si_ftype_v4si_v4si;
+	case TImode:
+	  type = ti_ftype_ti_ti;
+	  break;
+
+	default:
+	  abort ();
+	}
+
+      def_builtin (d->mask, d->name, type, d->code);
+    }
+}
+
+static rtx
+r5900_expand_binop_builtin (icode, arglist, target)
+     enum insn_code icode;
+     tree arglist;
+     rtx target;
+{
+  rtx pat;
+  tree arg0 = TREE_VALUE (arglist);
+  tree arg1 = TREE_VALUE (TREE_CHAIN (arglist));
+  rtx op0 = expand_expr (arg0, NULL_RTX, VOIDmode, 0);
+  rtx op1 = expand_expr (arg1, NULL_RTX, VOIDmode, 0);
+  enum machine_mode tmode = insn_data[icode].operand[0].mode;
+  enum machine_mode mode0 = insn_data[icode].operand[1].mode;
+  enum machine_mode mode1 = insn_data[icode].operand[2].mode;
+
+  if (! target
+      || GET_MODE (target) != tmode
+      || ! (*insn_data[icode].operand[0].predicate) (target, tmode))
+    target = gen_reg_rtx (tmode);
+
+  /* In case the insn wants input operands in modes different fro
+     the result, abort.  */
+  if (GET_MODE (op0) != mode0 || GET_MODE (op1) != mode1)
+    abort ();
+
+  if (! (*insn_data[icode].operand[1].predicate) (op0, mode0))
+    op0 = copy_to_mode_reg (mode0, op0);
+  if (! (*insn_data[icode].operand[2].predicate) (op1, mode1))
+    op1 = copy_to_mode_reg (mode1, op1);
+
+  pat = GEN_FCN (icode) (target, op0, op1);
+  if (! pat)
+    return 0;
+  emit_insn (pat);
+  return target;
+}
+
+static rtx
+r5900_expand_builtin (exp, target)
+     tree exp;
+     rtx target;
+{
+  struct builtin_description *d;
+  size_t i;
+  enum insn_code icode;
+  tree fndecl = TREE_OPERAND (TREE_OPERAND (exp, 0), 0);
+  tree arglist = TREE_OPERAND (exp, 1);
+  tree arg0, arg1, arg2, arg3;
+  rtx op0, op1, op2, pat;
+  enum machine_mode tmode, mode0, mode1, mode2;
+  unsigned int fcode = DECL_FUNCTION_CODE (fndecl);
+
+  for (i = 0, d = bdesc_2arg; i < sizeof (bdesc_2arg) / sizeof *d; i++, d++)
+    if (d->code == fcode)
+      return r5900_expand_binop_builtin (d->icode, arglist, target);
+
+  return 0;
+}
+
+static rtx
+mips_expand_builtin (exp, target, subtarget, mode, ignore)
+     tree exp;
+     rtx target;
+     rtx subtarget ATTRIBUTE_UNUSED;
+     enum machine_mode mode ATTRIBUTE_UNUSED;
+     int ignore ATTRIBUTE_UNUSED;
+{
+  if (TARGET_MIPS5900)
+    return r5900_expand_builtin (exp, target);
+
+  abort ();
+}
+
+static void
+mips_init_builtins ()
+{
+  if (TARGET_MIPS5900)
+    r5900_init_builtins ();
+}

@@ -81,6 +81,7 @@ extern void		init_cumulative_args PARAMS ((CUMULATIVE_ARGS *,
 extern void		gen_conditional_move PARAMS ((rtx *));
 extern void		mips_gen_conditional_trap PARAMS ((rtx *));
 extern void		machine_dependent_reorg PARAMS ((rtx));
+extern void		machine_dependent_reorg_final PARAMS ((rtx));
 extern int		mips_address_cost PARAMS ((rtx));
 extern void		mips_count_memory_refs PARAMS ((rtx, int));
 extern HOST_WIDE_INT	mips_debugger_offset PARAMS ((rtx, HOST_WIDE_INT));

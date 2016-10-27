@@ -1,0 +1,80 @@
+Apologies to mrbrown, who's README.PS2 this was based on.
+GCC for Sony Playstation 2
+http://www.ps2dev.org/
+BETA 3 Release 3.2.2-20040214-1
+==
+
+This patch contains a port of the GNU Compiler Collection (http://gcc.gnu.org)
+version 3.2.2 (prerelease) to the Sony Playstation 2.  It supports a C and C++
+cross-compiler targeting the Emotion Engine (Toshiba MIPS R5900).  It is based
+off of the port that Cygnus (now Red Hat) created for the original PS2 SDK,
+and contains a number of changes and updates that mrbrown has incorporated,
+plus some fixes by me.
+
+Unfortunately, there is no ChangeLog in this release.
+
+The Playstation 2 Linux kit is NOT supported in this release.  There are a
+number of issues related to the deployment of this version of GCC in that
+environment.  This is left as an exercise for the ps2linux folks.
+
+You can grab the source to the GCC 3.2.2 release from
+ftp://ftp.gnu.org/pub/gnu/gcc/gcc-3.2.2.tar.gz or a mirror site.
+
+
+Features
+--
+
+- Basic support for the R5900 and COP1.
+- Initial support for 128-bit logical/arith operations (pand, pnor, etc.).
+- Initial support for MMI built-in functions (__builtin_paddb, etc.) and vector
+  types.
+- The main "feature" of this release is the port to the 3.2.2 compiler and fixes
+  to the HILO1 code, allowing re-enabling of double precision emulation and also
+  C++ global constructor fixes.  This release may fix the 64bit shift bug, but
+  if that's the case then it's a side effect of another fix. 
+- Used in conjunction with my binutils-2.13.2.1 patch, you should be able to use
+  -O0 and -O1 without causing bad code generation.
+- Alignment in bss sections bug fix.
+
+To configure the compiler, you can use one of the following configuration
+names:
+
+        ee, mips64r5900[el], mipsEE[el]
+
+If you don't specify the OS portion of the name, -elf is assumed.  Note that
+even if you leave off the "el", you cannot build for big-endian R5900 (it's
+explicitly disabled).  I always use "ee".
+
+
+Known Bugs
+--
+
+[ I haven't found any serious codegen bugs yet. Mail to the ps2dev forums if
+  you find any. ]
+
+  If you wish to disable double precision emulation, comment out the text around
+  DPBIT (and the make target that follows it) in gcc/config/mips/t-r5900. If you
+  comment this section out and use double precision FP in your code, you WILL
+  receive link errors when linking with libgcc.  You can use this "feature" as a
+  tool to find all misuses of float constants and type conversions in your code.
+  Personally, I had trouble getting libstdc++-v3 to build without double precision
+  emulation but YMMV.  It should be possible to configure the compiler and libs
+  to use single precision doubles in place of doubles, however you'd have to make
+  sure that all your libs are built in this manner.
+
+
+Future Work
+--
+
+  Move over to gcc 3.4, once it's released. gcc 3.4 includes a re-write of the
+  entire mips back end and it looks a lot cleaner.
+
+
+Contact
+--
+
+  Use the forums at www.ps2dev.org or find me on IRC at #ps2dev on EFnet.
+
+--
+MrHTFord (mrhtford_ps2dev@hotmail.com)
+Friday 14th February 2004.

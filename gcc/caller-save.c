@@ -50,13 +50,21 @@ Software Foundation, 59 Temple Place - Suite 330, Boston, MA
    If that is not possible the save is done one register at a time.  */
 
 static enum machine_mode 
+#if TARGET_MIPS5900
+  regno_save_mode[FIRST_PSEUDO_REGISTER][16 / MIN_UNITS_PER_WORD + 1];
+#else
   regno_save_mode[FIRST_PSEUDO_REGISTER][MAX_MOVE_MAX / MIN_UNITS_PER_WORD + 1];
+#endif
 
 /* For each hard register, a place on the stack where it can be saved,
    if needed.  */
 
 static rtx 
+#if TARGET_MIPS5900
+  regno_save_mem[FIRST_PSEUDO_REGISTER][16 / MIN_UNITS_PER_WORD + 1];
+#else
   regno_save_mem[FIRST_PSEUDO_REGISTER][MAX_MOVE_MAX / MIN_UNITS_PER_WORD + 1];
+#endif
 
 /* We will only make a register eligible for caller-save if it can be
    saved in its widest mode with a simple SET insn as long as the memory

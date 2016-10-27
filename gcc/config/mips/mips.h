@@ -48,6 +48,7 @@ enum delay_type {
   DELAY_NONE,				/* no delay slot */
   DELAY_LOAD,				/* load from memory delay */
   DELAY_HILO,				/* move from/to hi/lo registers */
+  DELAY_HILO1,				/* move from/to hi1/lo1 registers */
   DELAY_FCMP				/* delay after doing c.<xx>.{d,s} */
 };
 
@@ -67,6 +68,7 @@ enum processor_type {
   PROCESSOR_R4600,
   PROCESSOR_R4650,
   PROCESSOR_R5000,
+  PROCESSOR_R5900,
   PROCESSOR_R8000,
   PROCESSOR_R4KC,
   PROCESSOR_R5KC,
@@ -146,6 +148,7 @@ extern int mips_isa;			/* architectural level */
 extern int mips16;			/* whether generating mips16 code */
 extern int mips16_hard_float;		/* mips16 without -msoft-float */
 extern int mips_entry;			/* generate entry/exit for mips16 */
+extern int mips_alignment;		/* max alignment bits */
 extern const char *mips_cpu_string;	/* for -mcpu=<xxx> */
 extern const char *mips_arch_string;    /* for -march=<xxx> */
 extern const char *mips_tune_string;    /* for -mtune=<xxx> */
@@ -155,6 +158,11 @@ extern const char *mips_entry_string;	/* for -mentry */
 extern const char *mips_no_mips16_string;/* for -mno-mips16 */
 extern const char *mips_explicit_type_size_string;/* for -mexplicit-type-size */
 extern const char *mips_cache_flush_func;/* for -mflush-func= and -mno-flush-func */
+extern const char *mips_align_all_string;/* for -malign-all= */
+extern const char * mips_align128_string;/* for -malign128 */
+extern const char * mips_no_align128_string;/* for -mno-align128 */
+extern const char * mips_use_128_string; /* for -muse-128 */
+extern int mips_use_128;                /* the boolean for -muse-128 */
 extern int mips_split_addresses;	/* perform high/lo_sum support */
 extern int dslots_load_total;		/* total # load related delay slots */
 extern int dslots_load_filled;		/* # filled load delay slots */
@@ -174,6 +182,8 @@ extern struct rtx_def *mips16_gp_pseudo_rtx; /* psuedo reg holding $gp */
 extern void		rdata_section PARAMS ((void));
 extern void		sdata_section PARAMS ((void));
 extern void		sbss_section PARAMS ((void));
+
+extern int mips_align_all;
 
 /* Stubs for half-pic support if not OSF/1 reference platform.  */
 
@@ -232,6 +242,10 @@ extern void		sbss_section PARAMS ((void));
 					   consts in rodata */
 #define MASK_NO_FUSED_MADD 0x01000000   /* Don't generate floating point
 					   multiply-add operations.  */
+#define MASK_MMI	    0x02000000	/* r5900 MultiMedia Instructions (MMI) */
+#define MASK_VUMM	    0x04000000	/* r5900 VU0 macro mode (COP2) */
+#define MASK_NO_LENGTHEN_LOOP \
+			    0x08000000	/* Disable r5900 loop bug workaround */
 
 					/* Debug switches, not documented */
 #define MASK_DEBUG	0		/* unused */
@@ -327,6 +341,16 @@ extern void		sbss_section PARAMS ((void));
 #define TARGET_NO_CHECK_ZERO_DIV (target_flags & MASK_NO_CHECK_ZERO_DIV)
 #define TARGET_CHECK_RANGE_DIV  (target_flags & MASK_CHECK_RANGE_DIV)
 
+					/* enable r5900 multimedia
+					   instructions.  */
+#define TARGET_MMI		(target_flags & MASK_MMI)
+
+			   		/* enable r5900 macro mode for VU0 */
+#define TARGET_VUMM		(target_flags & MASK_VUMM)
+
+					/* disable r5900 loop bug workaround */
+#define	TARGET_NO_LENGTHEN_LOOP	(target_flags & MASK_NO_LENGTHEN_LOOP)
+
 /* This is true if we must enable the assembly language file switching
    code.  */
 
@@ -346,6 +370,7 @@ extern void		sbss_section PARAMS ((void));
 #define TARGET_MIPS4000             (mips_arch == PROCESSOR_R4000)
 #define TARGET_MIPS4100             (mips_arch == PROCESSOR_R4100)
 #define TARGET_MIPS4300             (mips_arch == PROCESSOR_R4300)
+#define TARGET_MIPS5900             (mips_arch == PROCESSOR_R5900)
 #define TARGET_MIPS4KC              (mips_arch == PROCESSOR_R4KC)
 #define TARGET_MIPS5KC              (mips_arch == PROCESSOR_R5KC)
 
@@ -354,6 +379,7 @@ extern void		sbss_section PARAMS ((void));
 #define TUNE_MIPS3900               (mips_tune == PROCESSOR_R3900)
 #define TUNE_MIPS4000               (mips_tune == PROCESSOR_R4000)
 #define TUNE_MIPS5000               (mips_tune == PROCESSOR_R5000)
+#define TUNE_MIPS5900               (mips_tune == PROCESSOR_R5900)
 #define TUNE_MIPS6000               (mips_tune == PROCESSOR_R6000)
 
 /* Macro to define tables used to set the flags.
@@ -464,6 +490,18 @@ extern void		sbss_section PARAMS ((void));
      N_("Optimize for 3900")},						\
   {"4650",		  0,                    			\
      N_("Optimize for 4650")},						\
+  {"5900",		  0,						\
+     N_("Optimize for 5900")},						\
+  {"mmi",		  MASK_MMI,					\
+     N_("Use r5900 multimedia instructions")},				\
+  {"no-mmi",		  -MASK_MMI,					\
+     N_("Don't use r5900 multimedia instructions")},			\
+  {"vumm",		  MASK_VUMM,					\
+     N_("Use r5900 VU0 macro mode instructions")},			\
+  {"no-vumm",		  -MASK_VUMM,					\
+     N_("Don't use r5900 VU0 macro mode instructions")},		\
+  {"no-lengthen-loop",	  MASK_NO_LENGTHEN_LOOP,			\
+     N_("Don't workaround r5900 short loop bug")},			\
   {"check-zero-division",-MASK_NO_CHECK_ZERO_DIV,			\
      N_("Trap on integer divide by zero")},				\
   {"no-check-zero-division", MASK_NO_CHECK_ZERO_DIV,			\
@@ -472,6 +510,8 @@ extern void		sbss_section PARAMS ((void));
      N_("Trap on integer divide overflow")},				\
   {"no-check-range-division",-MASK_CHECK_RANGE_DIV,			\
      N_("Don't trap on integer divide overflow")},			\
+  {"iop",                 0,                                            \
+     N_("Output IOP's IRX file")},                                      \
   {"debug",		  MASK_DEBUG,					\
      NULL},								\
   {"debuga",		  MASK_DEBUG_A,					\
@@ -604,6 +644,8 @@ extern void		sbss_section PARAMS ((void));
       N_("Don't call any cache flush functions")},			\
   { "flush-func=", &mips_cache_flush_func,				\
       N_("Specify cache flush function")},				\
+  { "align-all=",  &mips_align_all_string,                              \
+      N_("Force lower alignment")},                                     \
 }
 
 /* This is meant to be redefined in the host dependent files.  */
@@ -613,6 +655,7 @@ extern void		sbss_section PARAMS ((void));
 
 /* Generate three-operand multiply instructions for SImode.  */
 #define GENERATE_MULT3_SI       ((TARGET_MIPS3900                       \
+                                  || TARGET_MIPS5900                    \
                                   || mips_isa == 32                     \
                                   || mips_isa == 64)                    \
                                  && !TARGET_MIPS16)
@@ -644,7 +687,7 @@ extern void		sbss_section PARAMS ((void));
 				 || mips_isa == 64)
 
 /* ISA has just the integer condition move instructions (movn,movz) */
-#define ISA_HAS_INT_CONDMOVE     0
+#define ISA_HAS_INT_CONDMOVE     (TARGET_MIPS5900)
 
 
 
@@ -847,7 +890,7 @@ while (0)
 /* GAS_ASM_SPEC is passed when using gas, rather than the MIPS
    assembler.  */
 
-#define GAS_ASM_SPEC "%{march=*} %{mtune=*} %{mcpu=*} %{m4650} %{mmad:-m4650} %{m3900} %{v} %{mgp32} %{mgp64} %(abi_gas_asm_spec) %{mabi=32:%{!mips*:-mips1}}"
+#define GAS_ASM_SPEC "%{march=*} %{mtune=*} %{mcpu=*} %{m4650} %{mmad:-m4650} %{m3900} %{m5900} %{v} %{mgp32} %{mgp64} %(abi_gas_asm_spec) %{mabi=32:%{!mips*:-mips1}}"
 
 
 extern int mips_abi;
@@ -964,7 +1007,7 @@ extern int mips_abi;
 #ifndef LINK_SPEC
 #define LINK_SPEC "\
 %(endian_spec) \
-%{G*} %{mips1} %{mips2} %{mips3} %{mips4} %{mips32} %{mips64} \
+%{G*} %{mips1} %{mips2} %{mips3} %{mips4} %{mips32} %{mips64} %{miop:-mmipsirx} \
 %{bestGnum} %{shared} %{non_shared}"
 #endif  /* LINK_SPEC defined */
 
@@ -984,7 +1027,9 @@ extern int mips_abi;
 %{m3900:-march=r3900 -mips1 -mfp32 -mgp32 \
 %n`-m3900' is deprecated. Use `-march=r3900' instead.\n} \
 %{m4650:-march=r4650 -mmad -msingle-float \
-%n`-m4650' is deprecated. Use `-march=r4650' instead.\n}}"
+%n`-m4650' is deprecated. Use `-march=r4650' instead.\n} \
+%{m5900:-march=r5900 -mips3 -mgp64 -mfp32 -mlong64 -mmmi -msingle-float \
+%n`-m5900' is deprecated. Use `-march=r5900' instead.\n}}"
 #endif
 
 /* CC1_SPEC is the set of arguments to pass to the compiler proper.  */
@@ -1003,6 +1048,7 @@ extern int mips_abi;
 %{mfp64:%{msingle-float:%emay not use both -mfp64 and -msingle-float}} \
 %{mfp64:%{m4650:%emay not use both -mfp64 and -m4650}} \
 %{mint64|mlong64|mlong32:-mexplicit-type-size }\
+%{miop:-march=r3000 -mfp32 -mgp32 -fno-builtin} \
 %{mgp32: %{mfp64:%emay not use both -mgp32 and -mfp64} %{!mfp32: -mfp32}} \
 %{G*} %{EB:-meb} %{EL:-mel} %{EB:%{EL:%emay not use both -EB and -EL}} \
 %{pic-none:   -mno-half-pic} \
@@ -1657,7 +1703,7 @@ do {							\
 #define STRUCTURE_SIZE_BOUNDARY 8
 
 /* There is no point aligning anything to a rounder boundary than this.  */
-#define BIGGEST_ALIGNMENT 64
+#define BIGGEST_ALIGNMENT 128
 
 /* Set this nonzero if move instructions will actually fail to work
    when given unaligned data.  */
@@ -1792,20 +1838,20 @@ do {							\
    address reg ($31) was stored.  This is needed for C++ exception
    handling.  */
 
-#define FIRST_PSEUDO_REGISTER 76
+#define FIRST_PSEUDO_REGISTER 79
 
 /* 1 for registers that have pervasive standard uses
    and are not available for the register allocator.
 
    On the MIPS, see conventions, page D-2  */
-
 #define FIXED_REGISTERS							\
 {									\
   1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,			\
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1,			\
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,			\
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,			\
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1					\
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,					\
+  0, 0, 0								\
 }
 
 
@@ -1822,7 +1868,8 @@ do {							\
   0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1,			\
   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,			\
   1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,			\
-  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1					\
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,					\
+  1, 1, 1								\
 }
 
 /* Like `CALL_USED_REGISTERS' but used to overcome a historical
@@ -1842,7 +1889,8 @@ do {							\
   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,			\
   1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,			\
   /* Others.  */                                                        \
-  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1					\
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,					\
+  1, 1, 1								\
 }
 
 /* Internal macros to classify a register number as to whether it's a
@@ -1863,6 +1911,10 @@ do {							\
 #define MD_REG_LAST  66
 #define MD_REG_NUM   (MD_REG_LAST - MD_REG_FIRST + 1)
 
+#define MD1_REG_FIRST 76
+#define MD1_REG_LAST  78
+#define MD1_REG_NUM   (MD1_REG_LAST - MD1_REG_FIRST + 1)
+
 #define ST_REG_FIRST 67
 #define ST_REG_LAST  74
 #define ST_REG_NUM   (ST_REG_LAST - ST_REG_FIRST + 1)
@@ -1873,6 +1925,9 @@ do {							\
 #define HI_REGNUM	(MD_REG_FIRST + 0)
 #define LO_REGNUM	(MD_REG_FIRST + 1)
 #define HILO_REGNUM	(MD_REG_FIRST + 2)
+#define HI1_REGNUM	(MD1_REG_FIRST + 0)
+#define LO1_REGNUM	(MD1_REG_FIRST + 1)
+#define HILO1_REGNUM	(MD1_REG_FIRST + 2)
 
 /* FPSW_REGNUM is the single condition code used if mips_isa < 4.  If
    mips_isa >= 4, it should not be used, and an arbitrary ST_REG
@@ -1887,6 +1942,8 @@ do {							\
   ((unsigned int) ((int) (REGNO) - FP_REG_FIRST) < FP_REG_NUM)
 #define MD_REG_P(REGNO) \
   ((unsigned int) ((int) (REGNO) - MD_REG_FIRST) < MD_REG_NUM)
+#define MD1_REG_P(REGNO) \
+  ((unsigned int) ((int) (REGNO) - MD1_REG_FIRST) < MD1_REG_NUM)
 #define ST_REG_P(REGNO) \
   ((unsigned int) ((int) (REGNO) - ST_REG_FIRST) < ST_REG_NUM)
 
@@ -2053,6 +2110,20 @@ enum reg_class
   LO_AND_GR_REGS,
   HILO_AND_GR_REGS,
   HI_AND_FP_REGS,
+  HI1_REG,			/* hi1 register */
+  LO1_REG,			/* lo1 register */
+  HILO1_REG,			/* hilo1 register pair for 64 bit mode mult */
+  MD1_REGS,			/* multiply/divide registers (hi/lo) */
+  HI1_AND_GR_REGS,		/* union classes */
+  LO1_AND_GR_REGS,
+  HILO1_AND_GR_REGS,
+  HI01_REG,			/* hi01 register */
+  LO01_REG,			/* lo01 register */
+  HILO01_REG,			/* hilo1 register pair for 64 bit mode mult */
+  MD01_REGS,			/* multiply/divide registers (hi1/lo1) */
+  HI01_AND_GR_REGS,		/* union classes */
+  LO01_AND_GR_REGS,
+  HILO01_AND_GR_REGS,
   ST_REGS,			/* status registers (fp status) */
   ALL_REGS,			/* all registers */
   LIM_REG_CLASSES		/* max value + 1 */
@@ -2083,6 +2154,20 @@ enum reg_class
   "LO_AND_GR_REGS",							\
   "HILO_AND_GR_REGS",							\
   "HI_AND_FP_REGS",							\
+  "HI1_REG",								\
+  "LO1_REG",								\
+  "HILO1_REG",								\
+  "MD1_REGS",								\
+  "HI1_AND_GR_REGS",							\
+  "LO1_AND_GR_REGS",							\
+  "HILO1_AND_GR_REGS",							\
+  "HI01_REG",								\
+  "LO01_REG",								\
+  "HILO01_REG",							\
+  "MD01_REGS",								\
+  "HI01_AND_GR_REGS",							\
+  "LO01_AND_GR_REGS",							\
+  "HILO01_AND_GR_REGS",						\
   "ST_REGS",								\
   "ALL_REGS"								\
 }
@@ -2101,7 +2186,7 @@ enum reg_class
 #define REG_CLASS_CONTENTS						\
 {									\
   { 0x00000000, 0x00000000, 0x00000000 },	/* no registers */	\
-  { 0x0003000c, 0x00000000, 0x00000000 },	/* mips16 nonarg regs */\
+  { 0x0003000c, 0x00000000, 0x00000000 },	/* mips16 nonarg regs */	\
   { 0x000300fc, 0x00000000, 0x00000000 },	/* mips16 registers */	\
   { 0x01000000, 0x00000000, 0x00000000 },	/* mips16 T register */	\
   { 0x010300fc, 0x00000000, 0x00000000 },	/* mips16 and T regs */ \
@@ -2115,8 +2200,24 @@ enum reg_class
   { 0xffffffff, 0x00000000, 0x00000002 },				\
   { 0xffffffff, 0x00000000, 0x00000004 },				\
   { 0x00000000, 0xffffffff, 0x00000001 },				\
+  /* Start of r5900 extra registers. */					\
+  { 0x00000000, 0x00000000, 0x00001000 },       /* hi1 register */		\
+  { 0x00000000, 0x00000000, 0x00002000 },       /* lo1 register */		\
+  { 0x00000000, 0x00000000, 0x00004000 },       /* hilo1 register */		\
+  { 0x00000000, 0x00000000, 0x00003000 },       /* mul1/div1 registers */	\
+  { 0xffffffff, 0x00000000, 0x00001000 },       /* union classes */		\
+  { 0xffffffff, 0x00000000, 0x00002000 },					\
+  { 0xffffffff, 0x00000000, 0x00004000 },					\
+  { 0x00000000, 0x00000000, 0x00001001 },       /* hi01 registers */		\
+  { 0x00000000, 0x00000000, 0x00002002 },       /* lo01 registers */		\
+  { 0x00000000, 0x00000000, 0x00004004 },       /* hilo01 registers */		\
+  { 0x00000000, 0x00000000, 0x00003003 },       /* mul01/div01 registers */	\
+  { 0xffffffff, 0x00000000, 0x00001001 },       /* union classes */		\
+  { 0xffffffff, 0x00000000, 0x00002002 },					\
+  { 0xffffffff, 0x00000000, 0x00004004 },					\
+  /* End of r5900 extra registers. */						\
   { 0x00000000, 0x00000000, 0x000007f8 },	/* status registers */	\
-  { 0xffffffff, 0xffffffff, 0x000007ff }	/* all registers */	\
+  { 0xffffffff, 0xffffffff, 0x000078ff }	/* all registers */		\
 }
 
 
@@ -2165,7 +2266,8 @@ extern const enum reg_class mips_regno_to_class[];
   16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,	\
   32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,	\
   48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,	\
-  64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75			\
+  64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75,			\
+  76, 77, 78								\
 }
 
 /* ORDER_REGS_FOR_LOCAL_ALLOC is a macro which permits reg_alloc_order
@@ -2193,7 +2295,11 @@ extern const enum reg_class mips_regno_to_class[];
    'x'	Multiply/divide registers
    'a'	HILO_REG
    'z'	FP Status register
-   'b'	All registers */
+   'b'	All registers
+   'u'	Hi1 register
+   'v'	Lo1 register
+   'w'	Multiply/divide1 registers
+   'q'	HILO1_REG  */
 
 extern enum reg_class mips_char_to_class[256];
 
@@ -2353,7 +2459,7 @@ extern enum reg_class mips_char_to_class[256];
 #define CLASS_CANNOT_CHANGE_MODE					\
   (TARGET_BIG_ENDIAN							\
    ? (TARGET_FLOAT64 && ! TARGET_64BIT ? FP_REGS : NO_REGS)		\
-   : (TARGET_FLOAT64 && ! TARGET_64BIT ? HI_AND_FP_REGS : HI_REG))
+   : (TARGET_FLOAT64 && ! TARGET_64BIT ? HI_AND_FP_REGS : HI01_REG))
 
 /* Defines illegal mode changes for CLASS_CANNOT_CHANGE_MODE.  */
 
@@ -3466,8 +3572,9 @@ while (0)
 
 /* Max number of bytes we can move from memory to memory
    in one reasonably fast instruction.  */
-#define MOVE_MAX (TARGET_64BIT ? 8 : 4)
-#define MAX_MOVE_MAX 8
+/* We can do 16 bytes using the r5900's MMI */
+#define MOVE_MAX (TARGET_MIPS5900 ? (mips_use_128 ? 16 : 8) : (TARGET_64BIT ? 8 : 4))
+#define MAX_MOVE_MAX (mips_use_128 ? 16 : 8)
 
 /* Define this macro as a C expression which is nonzero if
    accessing less than a word of memory (i.e. a `char' or a
@@ -3760,6 +3867,8 @@ while (0)
 	return COSTS_N_INSNS (17);					\
       else if (TUNE_MIPS5000)				\
 	return COSTS_N_INSNS (5);					\
+      else if (TUNE_MIPS5900)				\
+	return (xmode == SImode ? COSTS_N_INSNS (3) : COSTS_N_INSNS (30));\
       else								\
 	return COSTS_N_INSNS (10);					\
     }									\
@@ -3801,6 +3910,8 @@ while (0)
       return COSTS_N_INSNS (38);					\
     else if (TUNE_MIPS5000)				\
       return COSTS_N_INSNS (36);					\
+    else if (TUNE_MIPS5900)				\
+      return COSTS_N_INSNS (30);					\
     else								\
       return COSTS_N_INSNS (69);					\
 									\
@@ -3906,10 +4017,14 @@ while (0)
    : GR_REG_CLASS_P (FROM) && (TO) == FP_REGS ? 4			\
    : (FROM) == FP_REGS && GR_REG_CLASS_P (TO) ? 4			\
    : (((FROM) == HI_REG || (FROM) == LO_REG				\
-       || (FROM) == MD_REGS || (FROM) == HILO_REG)			\
+       || (FROM) == MD_REGS || (FROM) == HILO_REG			\
+       || (FROM) == HI1_REG || (FROM) == LO1_REG			\
+       || (FROM) == MD1_REGS || (FROM) == HILO1_REG)			\
       && GR_REG_CLASS_P (TO)) ? (TARGET_MIPS16 ? 12 : 6)		\
    : (((TO) == HI_REG || (TO) == LO_REG					\
-       || (TO) == MD_REGS || (TO) == HILO_REG)				\
+       || (TO) == MD_REGS || (TO) == HILO_REG				\
+       || (TO) == HI1_REG || (TO) == LO1_REG				\
+       || (TO) == MD1_REGS || (TO) == HILO1_REG)			\
       && GR_REG_CLASS_P (FROM)) ? (TARGET_MIPS16 ? 12 : 6)		\
    : (FROM) == ST_REGS && GR_REG_CLASS_P (TO) ? 4			\
    : (FROM) == FP_REGS && (TO) == ST_REGS ? 8				\
@@ -3942,6 +4057,10 @@ while (0)
    be updated with the correct length of the insn.  */
 #define ADJUST_INSN_LENGTH(INSN, LENGTH) \
   ((LENGTH) = mips_adjust_insn_length ((INSN), (LENGTH)))
+
+/* The r5900 is a dual issue processor.  */
+#undef ISSUE_RATE
+#define ISSUE_RATE ((TARGET_MIPS5900) ? 2 : 1)
 
 
 /* Optionally define this if you have added predicates to
@@ -3988,6 +4107,8 @@ while (0)
   {"movdi_operand",		{ CONST_INT, CONST_DOUBLE, CONST,	\
 				  SYMBOL_REF, LABEL_REF, SUBREG, REG,	\
 				  MEM, SIGN_EXTEND }},			\
+  {"movti_operand",		{ REG, MEM, CONST_INT, CONST_DOUBLE,	\
+				  SUBREG }},				\
   {"se_register_operand",	{ SUBREG, REG, SIGN_EXTEND }},		\
   {"se_reg_or_0_operand",	{ REG, CONST_INT, CONST_DOUBLE, SUBREG,	\
 				  SIGN_EXTEND }},			\
@@ -4142,6 +4263,9 @@ while (0)
   &mips_reg_names[73][0],						\
   &mips_reg_names[74][0],						\
   &mips_reg_names[75][0],						\
+  &mips_reg_names[76][0],						\
+  &mips_reg_names[77][0],						\
+  &mips_reg_names[78][0],						\
 }
 
 /* print-rtl.c can't use REGISTER_NAMES, since it depends on mips.c.
@@ -4157,7 +4281,8 @@ while (0)
   "$f16", "$f17", "$f18", "$f19", "$f20", "$f21", "$f22", "$f23",	\
   "$f24", "$f25", "$f26", "$f27", "$f28", "$f29", "$f30", "$f31",	\
   "hi",   "lo",   "accum","$fcc0","$fcc1","$fcc2","$fcc3","$fcc4",	\
-  "$fcc5","$fcc6","$fcc7","$rap"					\
+  "$fcc5","$fcc6","$fcc7","$rap",   					\
+  "hi1",  "lo1",  "accum1"						\
 }
 
 /* If defined, a C initializer for an array of structures
@@ -4410,6 +4535,7 @@ while (0)
   } while (0)
 
 /* This says how to define a global common symbol.  */
+/*	ASM_OUTPUT_ALIGN (STREAM, floor_log2 (ALIGN / BITS_PER_UNIT)); */
 
 #define ASM_OUTPUT_ALIGNED_DECL_COMMON(STREAM, DECL, NAME, SIZE, ALIGN) \
   do {									\
@@ -4428,9 +4554,10 @@ while (0)
 	mips_declare_object (STREAM, NAME, "", ":\n\t.space\t%u\n",	\
 	    (SIZE));							\
       }									\
-    else								\
-      mips_declare_object (STREAM, NAME, "\n\t.comm\t", ",%u\n",	\
-	  (SIZE));							\
+	else {								\
+	mips_declare_object_align (STREAM, NAME, "\n\t.comm\t", ",%u,%u\n",	\
+	  (SIZE),(ALIGN / BITS_PER_UNIT));				\
+	}								\
   } while (0)
 
 
@@ -4542,7 +4669,7 @@ do {									\
    to a multiple of 2**LOG bytes.  */
 
 #define ASM_OUTPUT_ALIGN(STREAM,LOG)					\
-  fprintf (STREAM, "\t.align\t%d\n", (LOG))
+  fprintf (STREAM, "\t.align\t%d\n", (LOG) > mips_align_all ? (LOG) : mips_align_all)
 
 /* This is how to output an assembler line to advance the location
    counter by SIZE bytes.  */
@@ -4716,6 +4843,15 @@ while (0)
    PC relative loads that are out of range.  */
 #define MACHINE_DEPENDENT_REORG(X) machine_dependent_reorg (X)
 
+/* This is used to lengthen short loops on the r5900. */
+#define MACHINE_DEPENDENT_REORG_FINAL(X) 				\
+do									\
+  {									\
+    if (TARGET_MIPS5900 && ! TARGET_NO_LENGTHEN_LOOP)			\
+      machine_dependent_reorg_final (X);				\
+  }									\
+while (0)
+
 /* We need to use a special set of functions to handle hard floating
    point code in mips16 mode.  */
 
@@ -4788,3 +4924,44 @@ do									\
       }									\
   }									\
 while (0)
+
+/* r5900 vector mode & built-in support. */
+
+#define VALID_MMI_REG_MODE(MODE)					\
+  ((MODE) == TImode || (MODE) == V16QImode || (MODE) == V8HImode	\
+   || (MODE) == V4SImode || (MODE) == V4SFmode || (MODE) == V2DImode)
+
+#define VALID_VUMM_REG_MODE(MODE)					\
+  ((MODE) == TImode || (MODE) == V4SFmode)
+
+#define VECTOR_MODE_SUPPORTED_P(MODE)					\
+  ((VALID_MMI_REG_MODE (MODE) && TARGET_MMI)				\
+   || (VALID_VUMM_REG_MODE (MODE) && TARGET_VUMM) ? 1 : 0)
+
+enum r5900_builtins
+{
+  /* MMI built-ins */
+  MMI_BUILTIN_PADDB,
+  MMI_BUILTIN_PADDH,
+  MMI_BUILTIN_PADDW,
+  MMI_BUILTIN_PADDSB,
+  MMI_BUILTIN_PADDSH,
+  MMI_BUILTIN_PADDSW,
+  MMI_BUILTIN_PADDUB,
+  MMI_BUILTIN_PADDUH,
+  MMI_BUILTIN_PADDUW,
+
+  MMI_BUILTIN_PSUBB,
+  MMI_BUILTIN_PSUBH,
+  MMI_BUILTIN_PSUBW,
+  MMI_BUILTIN_PSUBSB,
+  MMI_BUILTIN_PSUBSH,
+  MMI_BUILTIN_PSUBSW,
+  MMI_BUILTIN_PSUBUB,
+  MMI_BUILTIN_PSUBUH,
+  MMI_BUILTIN_PSUBUW,
+
+  /* VU macro mode built-ins */
+
+  R5900_BUILTIN_MAX
+};

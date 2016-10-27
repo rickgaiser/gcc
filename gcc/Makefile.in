@@ -987,6 +987,7 @@ libgcc.mk: config.status Makefile mklibgcc $(LIB2ADD) $(LIB2ADD_ST) xgcc$(exeext
 	LIB2FUNCS_ST='$(LIB2FUNCS_ST)' \
 	LIB2ADD='$(LIB2ADD)' \
 	LIB2ADD_ST='$(LIB2ADD_ST)' \
+	LIB2FUNCS_TI='$(LIB2FUNCS_TI)' \
 	LIB2ADDEH='$(LIB2ADDEH)' \
 	LIB2ADDEHDEP='$(LIB2ADDEHDEP)' \
 	FPBIT='$(FPBIT)' \
