@@ -366,4 +366,6 @@ typedef rtx (*mulsidi3_gen_fn) (rtx, rtx, rtx);
 extern mulsidi3_gen_fn mips_mulsidi3_gen_fn (enum rtx_code);
 #endif
 
+extern int r5900_emit_vcond_expr (rtx dest, rtx op1, rtx op2, rtx cond, rtx cc_op0, rtx cc_op1);
+
 #endif /* ! GCC_MIPS_PROTOS_H */

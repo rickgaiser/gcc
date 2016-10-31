@@ -315,10 +315,10 @@
 ;; mtlo		transfer to a lo register
 ;; mfhi		transfer from a hi register
 ;; mflo		transfer from a lo register
-;; mthi1	transfer to a hi1 register
-;; mtlo1	transfer to a lo1 register
-;; mfhi1	transfer from a hi1 register
-;; mflo1	transfer from a lo1 register
+;; mthi1	R5900 transfer to a hi1 register
+;; mtlo1	R5900 transfer to a lo1 register
+;; mfhi1	R5900 transfer from a hi1 register
+;; mflo1	R5900 transfer from a lo1 register
 ;; const	load constant
 ;; arith	integer arithmetic instructions
 ;; logical      integer logical instructions
@@ -363,13 +363,18 @@
 ;; nop		no operation
 ;; ghost	an instruction that produces no real code
 ;; multimem	microMIPS multiword load and store
+;; parith	R5900 parallel integer arithmetic instructions
+;; plogical	R5900 parallel integer logical instructions
+;; pshift	R5900 parallel integer shift instructions
+;; pmfhl	R5900 parallel transfer from from lo+hi registers
 (define_attr "type"
   "unknown,branch,jump,call,load,fpload,fpidxload,store,fpstore,fpidxstore,
    prefetch,prefetchx,condmove,mtc,mfc,mthi,mtlo,mfhi,mflo,const,arith,logical,
    shift,slt,signext,clz,pop,trap,imul,imul3,imul3nc,imadd,idiv,idiv3,move,
    fmove,fadd,fmul,fmadd,fdiv,frdiv,frdiv1,frdiv2,fabs,fneg,fcmp,fcvt,fsqrt,
    frsqrt,frsqrt1,frsqrt2,dspmac,dspmacsat,accext,accmod,dspalu,dspalusat,
-   multi,atomic,syncloop,nop,ghost,multimem,mthi1,mtlo1,mfhi1,mflo1"
+   multi,atomic,syncloop,nop,ghost,multimem,mthi1,mtlo1,mfhi1,mflo1,parith,
+   plogical,pshift,pmfhl"
   (cond [(eq_attr "jal" "!unset") (const_string "call")
 	 (eq_attr "got" "load") (const_string "load")
 
@@ -700,7 +705,7 @@
 ;; DELAY means that the next instruction cannot read the result
 ;; of this one.  HILO means that the next two instructions cannot
 ;; write to HI or LO.
-(define_attr "hazard" "none,delay,hilo,hilo1"
+(define_attr "hazard" "none,delay,hilo,hilo1,hilo01"
   (cond [(and (eq_attr "type" "load,fpload,fpidxload")
 	      (match_test "ISA_HAS_LOAD_DELAY"))
 	 (const_string "delay")
@@ -724,7 +729,11 @@
 
 	 (and (eq_attr "type" "mfhi1,mflo1")
 	      (not (match_test "ISA_HAS_HILO_INTERLOCKS")))
-	 (const_string "hilo1")]
+	 (const_string "hilo1")
+
+	 (and (eq_attr "type" "pmfhl")
+	      (not (match_test "ISA_HAS_HILO_INTERLOCKS")))
+	 (const_string "hilo01")]
 	(const_string "none")))
 
 ;; Can the instruction be put into a delay slot?

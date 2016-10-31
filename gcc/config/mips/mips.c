@@ -735,7 +735,7 @@ const enum reg_class mips_regno_to_class[FIRST_PSEUDO_REGISTER] = {
   DSP_ACC_REGS,	DSP_ACC_REGS,	DSP_ACC_REGS,	DSP_ACC_REGS,
   DSP_ACC_REGS,	DSP_ACC_REGS,	ALL_REGS,	ALL_REGS,
   ALL_REGS,	ALL_REGS,	ALL_REGS,	ALL_REGS,
-  MD1_0_REG,	MD1_1_REG
+  MD1_0_REG,	MD1_1_REG,	SA_REG
 };
 
 /* The value of TARGET_ATTRIBUTE_TABLE.  */
@@ -4537,6 +4537,24 @@ mips_split_move_p (rtx dest, rtx src, enum mips_split_type split_type)
 	return false;
     }
 
+  /* The R5900 has special quad-word loads and stores, and 128-bit GPRs.  */
+  if (TARGET_MIPS5900)
+    {
+      if (((GET_MODE (dest) == V4SImode)
+	   || (GET_MODE (dest) == V8HImode)
+	   || (GET_MODE (dest) == V16QImode))
+	      && ((REG_P (src) && GP_REG_P (REGNO (src)) && MEM_P (dest))
+		  || (REG_P (dest) && GP_REG_P (REGNO (dest)) && MEM_P (src))))
+      return false;
+
+      if ((REG_P (src) && REG_P (dest)
+          && (GP_REG_P (REGNO (src)) && GP_REG_P (REGNO (dest))))
+	     && ((GET_MODE (dest) == V4SImode)
+	         || (GET_MODE (dest) == V8HImode)
+	         || (GET_MODE (dest) == V16QImode)))
+      return false;
+    }
+
   /* Otherwise split all multiword moves.  */
   return size > UNITS_PER_WORD;
 }
@@ -4665,7 +4683,19 @@ mips_output_move (rtx dest, rtx src)
       if (dest_code == REG)
 	{
 	  if (GP_REG_P (REGNO (dest)))
+	    {
+	      if (TARGET_MIPS5900
+	        && (mode == V4SImode
+		    || mode == V8HImode
+		    || mode == V16QImode))
+	        {
+		  return "por\t%0,%.,%1";
+	        }
+	      else
+	        {
 	    return "move\t%0,%z1";
+	        }
+	    }
 
 	  if (mips_mult_move_p (dest, src, SPLIT_IF_NECESSARY))
 	    {
@@ -4709,6 +4739,7 @@ mips_output_move (rtx dest, rtx src)
 	  case 2: return "sh\t%z1,%0";
 	  case 4: return "sw\t%z1,%0";
 	  case 8: return "sd\t%z1,%0";
+	  case 16: return "sq\t%z1,%0";
 	  }
     }
   if (dest_code == REG && GP_REG_P (REGNO (dest)))
@@ -4758,6 +4789,7 @@ mips_output_move (rtx dest, rtx src)
 	  case 2: return "lhu\t%0,%1";
 	  case 4: return "lw\t%0,%1";
 	  case 8: return "ld\t%0,%1";
+	  case 16: return "lq\t%0,%1";
 	  }
 
       if (src_code == CONST_INT)
@@ -5321,6 +5353,9 @@ mips_get_arg_info (struct mips_arg_info *info, const CUMULATIVE_ARGS *cum,
 
   /* Work out the size of the argument.  */
   num_bytes = type ? int_size_in_bytes (type) : GET_MODE_SIZE (mode);
+  if (TARGET_MIPS5900)
+    num_words = (num_bytes + MAX_UNITS_PER_WORD_R5900 - 1) / MAX_UNITS_PER_WORD_R5900;
+  else
   num_words = (num_bytes + UNITS_PER_WORD - 1) / UNITS_PER_WORD;
 
   /* Decide whether it should go in a floating-point register, assuming
@@ -5398,6 +5433,10 @@ mips_get_arg_info (struct mips_arg_info *info, const CUMULATIVE_ARGS *cum,
     }
 
   /* See whether the argument has doubleword alignment.  */
+  if (TARGET_MIPS5900)
+    doubleword_aligned_p = (mips_function_arg_boundary (mode, type)
+			    > MAX_BITS_PER_WORD_R5900);
+  else
   doubleword_aligned_p = (mips_function_arg_boundary (mode, type)
 			  > BITS_PER_WORD);
 
@@ -5723,6 +5762,13 @@ mips_pass_by_reference (cumulative_args_t cum ATTRIBUTE_UNUSED,
       if (mode == DImode || mode == DFmode
 	  || mode == DQmode || mode == UDQmode
 	  || mode == DAmode || mode == UDAmode)
+	return 0;
+
+      /* The R5900's registers are large enough to pass arguments in these modes.  */
+      if (TARGET_MIPS5900
+	  && (mode == V4SImode
+	      || mode == V8HImode
+	      || mode == V16QImode))
 	return 0;
 
       size = type ? int_size_in_bytes (type) : GET_MODE_SIZE (mode);
@@ -7523,6 +7569,18 @@ mips_block_move_straight (rtx dest, rtx src, HOST_WIDE_INT length)
   machine_mode mode;
   rtx *regs;
 
+  /* The R5900 has quad-word loads and stores, but they will only work 
+     if the data is aligned to at least 128-bit boundaries.  */
+  if (TARGET_MIPS5900
+      && ((MEM_ALIGN (src) >= MAX_BITS_PER_WORD_R5900)
+      && (MEM_ALIGN (dest) >= MAX_BITS_PER_WORD_R5900)))
+    {
+       bits = MAX_BITS_PER_WORD_R5900;
+       mode = mode_for_size (bits, MODE_VECTOR_INT, 0);
+       delta = bits / BITS_PER_UNIT;
+    }
+  else
+    {
   /* Work out how many bits to move at a time.  If both operands have
      half-word alignment, it is usually better to move in half words.
      For instance, lh/lh/sh/sh is usually better than lwl/lwr/swl/swr
@@ -7536,6 +7594,7 @@ mips_block_move_straight (rtx dest, rtx src, HOST_WIDE_INT length)
 
   mode = mode_for_size (bits, MODE_INT, 0);
   delta = bits / BITS_PER_UNIT;
+    }
 
   /* Allocate a buffer for the temporary registers.  */
   regs = XALLOCAVEC (rtx, length / delta);
@@ -10136,6 +10195,9 @@ mips_interrupt_extra_call_saved_reg_p (unsigned int regno)
   if (TARGET_DSP && DSP_ACC_REG_P (regno))
     return true;
 
+  if (regno == SA_REGNUM)
+    return false;
+
   if (GP_REG_P (regno) && !cfun->machine->use_shadow_register_set_p)
     {
       /* $0 is hard-wired.  */
@@ -12142,6 +12204,29 @@ mips_hard_regno_mode_ok_p (unsigned int regno, machine_mode mode)
   size = GET_MODE_SIZE (mode);
   mclass = GET_MODE_CLASS (mode);
 
+  if (TARGET_MIPS5900)
+    {
+      if (regno == SA_REGNUM
+	  && size <= UNITS_PER_WORD)
+        return true;
+
+      /* Allow 128-bit vector modes for the R5900.  */
+      if (GP_REG_P (regno)
+	  && (mode == V4SImode
+	      || mode == V8HImode
+	      || mode == V16QImode))
+        return true;
+
+      if (ACC_REG_P (regno)
+	  && (mode == V4SImode
+	      || mode == V8HImode
+	      || mode == V16QImode
+	      || mode == V4DImode
+	      || mode == V8SImode
+	      || mode == V16HImode))
+        return true;
+    }
+
   if (GP_REG_P (regno) && mode != CCFmode)
     return ((regno - GP_REG_FIRST) & 1) == 0 || size <= UNITS_PER_WORD;
 
@@ -12241,6 +12326,30 @@ mips_hard_regno_nregs (int regno, machine_mode mode)
   if (FP_REG_P (regno))
     return (GET_MODE_SIZE (mode) + UNITS_PER_FPREG - 1) / UNITS_PER_FPREG;
 
+  /* The R5900 supports 128-bit vector modes in its registers.  */
+  if (TARGET_MIPS5900)
+    {
+      if (GP_REG_P (regno)
+        && (mode == V4SImode
+	    || mode == V8HImode
+	    || mode == V16QImode))
+      return 1;
+
+      if (ACC_REG_P (regno))
+        {
+          if (mode == V4SImode
+	      || mode == V8HImode
+	      || mode == V16QImode)
+          return 1;
+
+	  /* Double-sized vector modes for the hi/lo pair.  */
+          if (mode == V4DImode
+	      || mode == V8SImode
+	      || mode == V16HImode)
+          return 2;
+        }
+  }
+
   /* All other registers are word-sized.  */
   return (GET_MODE_SIZE (mode) + UNITS_PER_WORD - 1) / UNITS_PER_WORD;
 }
@@ -12285,6 +12394,14 @@ mips_cannot_change_mode_class (machine_mode from,
   if (GET_MODE_SIZE (from) == 8 && GET_MODE_SIZE (to) == 8
       && INTEGRAL_MODE_P (from) && INTEGRAL_MODE_P (to))
     return false;
+
+  if (TARGET_MIPS5900)
+    {
+      /* Allow conversions between different 128-bit vector modes for the R5900.  */
+      if ((from == V4SImode || from == V8HImode || from == V16QImode)
+	  && (to == V4SImode || to == V8HImode || to == V16QImode))
+        return false;
+    }
 
   /* Otherwise, there are several problems with changing the modes of
      values in floating-point registers:
@@ -12654,6 +12771,14 @@ mips_vector_mode_supported_p (machine_mode mode)
     case V8QImode:
       return TARGET_LOONGSON_VECTORS;
 
+    case V4SImode:
+    case V8HImode:
+    case V16QImode:
+    case V4DImode:
+    case V8SImode:
+    case V16HImode:
+      return TARGET_MIPS5900;
+
     default:
       return false;
     }
@@ -12881,6 +13006,7 @@ mips_adjust_insn_length (rtx_insn *insn, int length)
 	length += NOP_INSN_LENGTH;
 	break;
 
+      case HAZARD_HILO01:
       case HAZARD_HILO1:
       case HAZARD_HILO:
 	length += NOP_INSN_LENGTH * 2;
@@ -14224,6 +14350,7 @@ AVAIL_NON_MIPS16 (dsp_32, !TARGET_64BIT && TARGET_DSP)
 AVAIL_NON_MIPS16 (dsp_64, TARGET_64BIT && TARGET_DSP)
 AVAIL_NON_MIPS16 (dspr2_32, !TARGET_64BIT && TARGET_DSPR2)
 AVAIL_NON_MIPS16 (loongson, TARGET_LOONGSON_VECTORS)
+AVAIL_NON_MIPS16 (mmi, TARGET_MIPS5900)
 AVAIL_NON_MIPS16 (cache, TARGET_CACHE_BUILTIN)
 
 /* Construct a mips_builtin_description from the given arguments.
@@ -14341,6 +14468,14 @@ AVAIL_NON_MIPS16 (cache, TARGET_CACHE_BUILTIN)
 #define LOONGSON_BUILTIN_SUFFIX(INSN, SUFFIX, FUNCTION_TYPE)		\
   LOONGSON_BUILTIN_ALIAS (INSN, INSN ## _ ## SUFFIX, FUNCTION_TYPE)
 
+/* Define a MMI MIPS_BUILTIN_DIRECT function __builtin_mmi_<INSN>
+   for instruction CODE_FOR_mmi_<INSN>.  FUNCTION_TYPE is a
+   builtin_description field.  */
+#define MMI_DIRECT_BUILTIN(INSN, FUNCTION_TYPE)				\
+  { CODE_FOR_mmi_ ## INSN, MIPS_FP_COND_f,				\
+    "__builtin_mmi_" #INSN, MIPS_BUILTIN_DIRECT, FUNCTION_TYPE,		\
+    mips_builtin_avail_mmi }
+
 #define CODE_FOR_mips_sqrt_ps CODE_FOR_sqrtv2sf2
 #define CODE_FOR_mips_addq_ph CODE_FOR_addv2hi3
 #define CODE_FOR_mips_addu_qb CODE_FOR_addv4qi3
@@ -14380,6 +14515,38 @@ AVAIL_NON_MIPS16 (cache, TARGET_CACHE_BUILTIN)
 #define CODE_FOR_loongson_psubsb CODE_FOR_sssubv8qi3
 #define CODE_FOR_loongson_psubush CODE_FOR_ussubv4hi3
 #define CODE_FOR_loongson_psubusb CODE_FOR_ussubv8qi3
+
+#define CODE_FOR_mmi_paddb CODE_FOR_addv16qi3
+#define CODE_FOR_mmi_psubb CODE_FOR_subv16qi3
+#define CODE_FOR_mmi_paddh CODE_FOR_addv8hi3
+#define CODE_FOR_mmi_psubh CODE_FOR_subv8hi3
+#define CODE_FOR_mmi_paddw CODE_FOR_addv4si3
+#define CODE_FOR_mmi_psubw CODE_FOR_subv4si3
+#define CODE_FOR_mmi_paddsb CODE_FOR_ssaddv16qi3
+#define CODE_FOR_mmi_psubsb CODE_FOR_sssubv16qi3
+#define CODE_FOR_mmi_paddsh CODE_FOR_ssaddv8hi3
+#define CODE_FOR_mmi_psubsh CODE_FOR_sssubv8hi3
+#define CODE_FOR_mmi_paddsw CODE_FOR_ssaddv4si3
+#define CODE_FOR_mmi_psubsw CODE_FOR_sssubv4si3
+#define CODE_FOR_mmi_paddub CODE_FOR_usaddv16qi3
+#define CODE_FOR_mmi_psubub CODE_FOR_ussubv16qi3
+#define CODE_FOR_mmi_padduh CODE_FOR_usaddv8hi3
+#define CODE_FOR_mmi_psubuh CODE_FOR_ussubv8hi3
+#define CODE_FOR_mmi_padduw CODE_FOR_usaddv4si3
+#define CODE_FOR_mmi_psubuw CODE_FOR_ussubv4si3
+#define CODE_FOR_mmi_pceqb CODE_FOR_vec_cmpeqv4si
+#define CODE_FOR_mmi_pceqh CODE_FOR_vec_cmpeqv8hi
+#define CODE_FOR_mmi_pceqw CODE_FOR_vec_cmpeqv16qi
+#define CODE_FOR_mmi_pcgtb CODE_FOR_vec_cmpgtv4si
+#define CODE_FOR_mmi_pcgth CODE_FOR_vec_cmpgtv8hi
+#define CODE_FOR_mmi_pcgtw CODE_FOR_vec_cmpgtv16qi
+
+#define CODE_FOR_mmi_psrah CODE_FOR_ashrv8hi3
+#define CODE_FOR_mmi_psraw CODE_FOR_ashrv4si3
+#define CODE_FOR_mmi_psrlh CODE_FOR_lshrv8hi3
+#define CODE_FOR_mmi_psrlw CODE_FOR_lshrv4si3
+#define CODE_FOR_mmi_psllh CODE_FOR_ashlv8hi3
+#define CODE_FOR_mmi_psllw CODE_FOR_ashlv4si3
 
 static const struct mips_builtin_description mips_builtins[] = {
 #define MIPS_GET_FCSR 0
@@ -14668,6 +14835,39 @@ static const struct mips_builtin_description mips_builtins[] = {
   LOONGSON_BUILTIN_SUFFIX (punpcklhw, s, MIPS_V4HI_FTYPE_V4HI_V4HI),
   LOONGSON_BUILTIN_SUFFIX (punpcklwd, s, MIPS_V2SI_FTYPE_V2SI_V2SI),
 
+  /* The following are for the MIPS R5900 MMI.  */
+  MMI_DIRECT_BUILTIN (paddb, MIPS_UV16QI_FTYPE_UV16QI_UV16QI),
+  MMI_DIRECT_BUILTIN (psubb, MIPS_UV16QI_FTYPE_UV16QI_UV16QI),
+  MMI_DIRECT_BUILTIN (paddh, MIPS_UV8HI_FTYPE_UV8HI_UV8HI),
+  MMI_DIRECT_BUILTIN (psubh, MIPS_UV8HI_FTYPE_UV8HI_UV8HI),
+  MMI_DIRECT_BUILTIN (paddw, MIPS_UV4SI_FTYPE_UV4SI_UV4SI),
+  MMI_DIRECT_BUILTIN (psubw, MIPS_UV4SI_FTYPE_UV4SI_UV4SI),
+  MMI_DIRECT_BUILTIN (paddsb, MIPS_V16QI_FTYPE_V16QI_V16QI),
+  MMI_DIRECT_BUILTIN (psubsb, MIPS_V16QI_FTYPE_V16QI_V16QI),
+  MMI_DIRECT_BUILTIN (paddsh, MIPS_V8HI_FTYPE_V8HI_V8HI),
+  MMI_DIRECT_BUILTIN (psubsh, MIPS_V8HI_FTYPE_V8HI_V8HI),
+  MMI_DIRECT_BUILTIN (paddsw, MIPS_V4SI_FTYPE_V4SI_V4SI),
+  MMI_DIRECT_BUILTIN (psubsw, MIPS_V4SI_FTYPE_V4SI_V4SI),
+  MMI_DIRECT_BUILTIN (paddub, MIPS_UV16QI_FTYPE_UV16QI_UV16QI),
+  MMI_DIRECT_BUILTIN (psubub, MIPS_UV16QI_FTYPE_UV16QI_UV16QI),
+  MMI_DIRECT_BUILTIN (padduh, MIPS_UV8HI_FTYPE_UV8HI_UV8HI),
+  MMI_DIRECT_BUILTIN (psubuh, MIPS_UV8HI_FTYPE_UV8HI_UV8HI),
+  MMI_DIRECT_BUILTIN (padduw, MIPS_UV4SI_FTYPE_UV4SI_UV4SI),
+  MMI_DIRECT_BUILTIN (psubuw, MIPS_UV4SI_FTYPE_UV4SI_UV4SI),
+  MMI_DIRECT_BUILTIN(pceqb, MIPS_V16QI_FTYPE_V16QI_V16QI),
+  MMI_DIRECT_BUILTIN(pceqh, MIPS_V8HI_FTYPE_V8HI_V8HI),
+  MMI_DIRECT_BUILTIN(pceqw, MIPS_V4SI_FTYPE_V4SI_V4SI),
+  MMI_DIRECT_BUILTIN(pcgtb, MIPS_V16QI_FTYPE_V16QI_V16QI),
+  MMI_DIRECT_BUILTIN(pcgth, MIPS_V8HI_FTYPE_V8HI_V8HI),
+  MMI_DIRECT_BUILTIN(pcgtw, MIPS_V4SI_FTYPE_V4SI_V4SI),
+
+  MMI_DIRECT_BUILTIN (psrah, MIPS_V8HI_FTYPE_V8HI_INT),
+  MMI_DIRECT_BUILTIN (psraw, MIPS_V4SI_FTYPE_V4SI_INT),
+  MMI_DIRECT_BUILTIN (psrlh, MIPS_V8HI_FTYPE_V8HI_INT),
+  MMI_DIRECT_BUILTIN (psrlw, MIPS_V4SI_FTYPE_V4SI_INT),
+  MMI_DIRECT_BUILTIN (psllh, MIPS_V8HI_FTYPE_V8HI_INT),
+  MMI_DIRECT_BUILTIN (psllw, MIPS_V4SI_FTYPE_V4SI_INT),
+
   /* Sundry other built-in functions.  */
   DIRECT_NO_TARGET_BUILTIN (cache, MIPS_VOID_FTYPE_SI_CVPOINTER, cache)
 };
@@ -14730,13 +14930,22 @@ mips_build_cvpointer_type (void)
 #define MIPS_ATYPE_V2SI mips_builtin_vector_type (intSI_type_node, V2SImode)
 #define MIPS_ATYPE_V4QI mips_builtin_vector_type (intQI_type_node, V4QImode)
 #define MIPS_ATYPE_V4HI mips_builtin_vector_type (intHI_type_node, V4HImode)
+#define MIPS_ATYPE_V4SI mips_builtin_vector_type (intSI_type_node, V4SImode)
+#define MIPS_ATYPE_V8HI mips_builtin_vector_type (intHI_type_node, V8HImode)
 #define MIPS_ATYPE_V8QI mips_builtin_vector_type (intQI_type_node, V8QImode)
+#define MIPS_ATYPE_V16QI mips_builtin_vector_type (intQI_type_node, V16QImode)
 #define MIPS_ATYPE_UV2SI					\
   mips_builtin_vector_type (unsigned_intSI_type_node, V2SImode)
 #define MIPS_ATYPE_UV4HI					\
   mips_builtin_vector_type (unsigned_intHI_type_node, V4HImode)
+#define MIPS_ATYPE_UV4SI					\
+  mips_builtin_vector_type (unsigned_intSI_type_node, V4SImode)
+#define MIPS_ATYPE_UV8HI					\
+  mips_builtin_vector_type (unsigned_intHI_type_node, V8HImode)
 #define MIPS_ATYPE_UV8QI					\
   mips_builtin_vector_type (unsigned_intQI_type_node, V8QImode)
+#define MIPS_ATYPE_UV16QI					\
+  mips_builtin_vector_type (unsigned_intQI_type_node, V16QImode)
 
 /* MIPS_FTYPE_ATYPESN takes N MIPS_FTYPES-like type codes and lists
    their associated MIPS_ATYPEs.  */
@@ -16618,6 +16827,11 @@ mips_avoid_hazard (rtx_insn *after, rtx_insn *insn, int *hilo_delay, int *hilo1_
 	*hilo_delay = 0;
 	break;
 
+      case HAZARD_HILO01:
+	*hilo_delay = 0;
+	*hilo1_delay = 0;
+	break;
+
       case HAZARD_DELAY:
 	set = single_set (insn);
 	gcc_assert (set);
@@ -17951,8 +18165,18 @@ mips_conditional_register_usage (void)
     }
 
   if (!TARGET_MIPS5900)
+    {
       AND_COMPL_HARD_REG_SET (accessible_reg_set,
 		    reg_class_contents[(int) MD1_REGS]);
+      AND_COMPL_HARD_REG_SET (accessible_reg_set,
+		    reg_class_contents[(int) SA_REG]);
+    }
+  else
+    {
+      /* Do not allow the SA register to be used as an operand.  */
+      AND_COMPL_HARD_REG_SET (operand_reg_set,
+			      reg_class_contents[(int) SA_REG]);
+    }
 
   if (!TARGET_HARD_FLOAT)
     {
@@ -19207,6 +19431,69 @@ mips_expand_vi_general (machine_mode vmode, machine_mode imode,
   emit_move_insn (target, mem);
 }
 
+static void
+mips_r5900_expand_vi (machine_mode vmode, machine_mode imode,
+			unsigned nelt, rtx target, rtx vals)
+{
+  rtx lower, upper, x, y, ireg;
+  unsigned int i, shift_amount, isize;
+
+  isize = GET_MODE_SIZE (imode);
+  shift_amount = isize * BITS_PER_UNIT;
+
+  switch (vmode)
+    {
+      case V4SImode:
+        break;
+      case V8HImode:
+        break;
+      case V16QImode:
+        break;
+      default:
+        gcc_unreachable ();
+    }
+
+  y = gen_reg_rtx (DImode);
+
+  /* Set up the lower vector elements.  */
+  lower = gen_reg_rtx (vmode);
+  ireg = gen_lowpart (DImode, lower);
+  for (i = 0; i < nelt / 2; ++i)
+  {
+    x = XVECEXP (vals, 0, i);
+    if (i > 0)
+      emit_insn (gen_ashldi3 (y, x, GEN_INT (i * shift_amount)));
+    emit_insn (gen_iordi3 (ireg, ireg, y));
+  }
+
+  /* Set up the upper vector elements.  */
+  upper = gen_reg_rtx (vmode);
+  ireg = gen_lowpart (DImode, upper);
+  for (i = 0; i < nelt / 2; ++i)
+  {
+    x = XVECEXP (vals, 0, i + nelt / 2);
+    if (i > 0)
+      emit_insn (gen_ashldi3 (y, x, GEN_INT (i * shift_amount)));
+    emit_insn (gen_iordi3 (ireg, ireg, y));
+  }
+
+  /* Merge the lower and upper vector elements.  */
+  switch (vmode)
+    {
+      case V4SImode:
+        emit_insn (gen_pcpyldv4si (target, lower, upper));
+        break;
+      case V8HImode:
+        emit_insn (gen_pcpyldv8hi (target, lower, upper));
+        break;
+      case V16QImode:
+        emit_insn (gen_pcpyldv16qi (target, lower, upper));
+        break;
+      default:
+        gcc_unreachable ();
+    }
+}
+
 /* Expand a vector initialization.  */
 
 void
@@ -19245,23 +19532,29 @@ mips_expand_vector_init (rtx target, rtx vals)
       return;
     }
 
-  /* Loongson is the only cpu with vectors with more elements.  */
-  gcc_assert (TARGET_HARD_FLOAT && TARGET_LOONGSON_VECTORS);
+  /* The R5900 and Loongson are the only CPUs with vectors containing more elements.  */
+  gcc_assert ((TARGET_HARD_FLOAT && TARGET_LOONGSON_VECTORS) || TARGET_MIPS5900);
 
   /* If all values are identical, broadcast the value.  */
+  if (!TARGET_MIPS5900)
+    {
   if (all_same)
     {
       mips_expand_vi_broadcast (vmode, target, XVECEXP (vals, 0, 0));
       return;
     }
+    }
 
-  /* If we've only got one non-variable V4HImode, use PINSRH.  */
-  if (nvar == 1 && vmode == V4HImode)
+  /* Loongson: if we've only got one non-variable V4HImode, use PINSRH.  */
+  if (TARGET_LOONGSON_VECTORS && (nvar == 1 && vmode == V4HImode))
     {
       mips_expand_vi_loongson_one_pinsrh (target, vals, one_var);
       return;
     }
 
+  if (TARGET_MIPS5900)
+    mips_r5900_expand_vi (vmode, imode, nelt, target, vals);
+  else
   mips_expand_vi_general (vmode, imode, nelt, nvar, target, vals);
 }
 
@@ -19361,6 +19654,106 @@ mips_expand_vec_minmax (rtx target, rtx op0, rtx op1,
 
   x = gen_rtx_IOR (vmode, t0, t1);
   emit_insn (gen_rtx_SET (VOIDmode, target, x));
+}
+
+static void
+emit_vcondeq (rtx dest, rtx op0, rtx op1, rtx cc_op0, rtx cc_op1)
+{
+  machine_mode mode = GET_MODE (op0);
+
+  switch (mode)
+    {
+      case V4SImode:
+        emit_insn (gen_vcondeqv4si (dest, op0, op1, cc_op0, cc_op1));
+        break;
+      case V8HImode:
+        emit_insn (gen_vcondeqv8hi (dest, op0, op1, cc_op0, cc_op1));
+        break;
+      case V16QImode:
+        emit_insn (gen_vcondeqv16qi (dest, op0, op1, cc_op0, cc_op1));
+        break;
+      default:
+        gcc_unreachable ();
+    }
+}
+
+static void
+emit_vcondgt (rtx dest, rtx op0, rtx op1, rtx cc_op0, rtx cc_op1)
+{
+  machine_mode mode = GET_MODE (op0);
+
+  switch (mode)
+    {
+      case V4SImode:
+        emit_insn (gen_vcondgtv4si (dest, op0, op1, cc_op0, cc_op1));
+        break;
+      case V8HImode:
+        emit_insn (gen_vcondgtv8hi (dest, op0, op1, cc_op0, cc_op1));
+        break;
+      case V16QImode:
+        emit_insn (gen_vcondgtv16qi (dest, op0, op1, cc_op0, cc_op1));
+        break;
+      default:
+        gcc_unreachable ();
+    }
+}
+
+static void
+r5900_emit_vector_compare (enum rtx_code rcode,
+                            rtx dest, rtx op0, rtx op1,
+                            rtx cc_op0, rtx cc_op1)
+{
+  gcc_assert (GET_MODE(op0) == GET_MODE(op1));
+
+  switch (rcode)
+    {
+    case LT:
+    case LTU:
+      r5900_emit_vector_compare (GE, dest, op1, op0, cc_op0, cc_op1);
+      return;
+    case GE:
+    case GEU:
+      emit_vcondgt (dest, op0, op1, cc_op0, cc_op1);
+      return;
+    case LE:
+    case LEU:
+      r5900_emit_vector_compare (GE, dest, op0, op1, cc_op1, cc_op0);
+      return;
+    case GT:
+      r5900_emit_vector_compare (LE, dest, op1, op0, cc_op0, cc_op1);
+      return;
+    case EQ:
+      emit_vcondeq (dest, op0, op1, cc_op0, cc_op1);
+      return;
+    case NE:
+      r5900_emit_vector_compare (EQ, dest, op1, op0, cc_op0, cc_op1);
+      return;
+    case UNLE:
+      r5900_emit_vector_compare (LE, dest, op1, op0, cc_op0, cc_op1);
+      return;
+    case UNLT:
+      r5900_emit_vector_compare (LT, dest, op1, op0, cc_op0, cc_op1);
+      return;
+    case UNGE:
+      r5900_emit_vector_compare (GE, dest, op1, op0, cc_op0, cc_op1);
+      return;
+    case UNGT:
+      r5900_emit_vector_compare (GT, dest, op1, op0, cc_op0, cc_op1);
+      return;
+    default:
+      gcc_unreachable ();
+  }
+}
+
+int
+r5900_emit_vcond_expr (rtx dest, rtx op1, rtx op2,
+		       rtx cond, rtx cc_op0, rtx cc_op1)
+{
+  enum rtx_code rcode = GET_CODE (cond);
+
+  r5900_emit_vector_compare (rcode, dest, op1, op2, cc_op0, cc_op1);
+
+  return 1;
 }
 
 /* Implement HARD_REGNO_CALLER_SAVE_MODE.  */
