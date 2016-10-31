@@ -267,6 +267,7 @@ struct mips_cpu_info {
 #define TUNE_MIPS5000               (mips_tune == PROCESSOR_R5000)
 #define TUNE_MIPS5400               (mips_tune == PROCESSOR_R5400)
 #define TUNE_MIPS5500               (mips_tune == PROCESSOR_R5500)
+#define TUNE_MIPS5900               (mips_tune == PROCESSOR_R5900)
 #define TUNE_MIPS6000               (mips_tune == PROCESSOR_R6000)
 #define TUNE_MIPS7000               (mips_tune == PROCESSOR_R7000)
 #define TUNE_MIPS9000               (mips_tune == PROCESSOR_R9000)
@@ -319,7 +320,8 @@ struct mips_cpu_info {
 				     || TUNE_MIPS4120		\
 				     || TUNE_MIPS4130		\
 				     || TUNE_24K		\
-				     || TUNE_P5600)
+				     || TUNE_P5600		\
+				     || TUNE_MIPS5900)
 
 #define TARGET_OLDABI		    (mips_abi == ABI_32 || mips_abi == ABI_O64)
 #define TARGET_NEWABI		    (mips_abi == ABI_N32 || mips_abi == ABI_64)
@@ -992,8 +994,9 @@ struct mips_cpu_info {
 				 && !TARGET_MIPS16)
 
 /* ISA has integer multiply-accumulate instructions, madd and msub.  */
-#define ISA_HAS_MADD_MSUB	(mips_isa_rev >= 1			\
-				 && mips_isa_rev <= 5)
+#define ISA_HAS_MADD_MSUB	((mips_isa_rev >= 1			\
+				 && mips_isa_rev <= 5)	\
+				 || TARGET_MIPS5900)
 
 /* Integer multiply-accumulate instructions should be generated.  */
 #define GENERATE_MADD_MSUB	(TARGET_IMADD && !TARGET_MIPS16)
@@ -1451,6 +1454,9 @@ FP_ASM_SPEC "\
 #define MIN_UNITS_PER_WORD 4
 #endif
 
+/* The R5900 has 128-bit registers.  */
+#define MAX_BITS_PER_WORD_R5900 128
+
 /* For MIPS, width of a floating point register.  */
 #define UNITS_PER_FPREG (TARGET_FLOAT64 ? 8 : 4)
 
@@ -1649,9 +1655,10 @@ FP_ASM_SPEC "\
 	- CPRESTORE_SLOT_REGNUM
    - 2 dummy entries that were used at various times in the past.
    - 6 DSP accumulator registers (3 hi-lo pairs) for MIPS DSP ASE
-   - 6 DSP control registers  */
+   - 6 DSP control registers
+   - 2 accumulator registers for the R5900's second pipeline (hi1 and lo1)   */
 
-#define FIRST_PSEUDO_REGISTER 188
+#define FIRST_PSEUDO_REGISTER 190
 
 /* By default, fix the kernel registers ($26 and $27), the global
    pointer ($28) and the stack pointer ($29).  This can change
@@ -1679,8 +1686,9 @@ FP_ASM_SPEC "\
   /* COP3 registers */							\
   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,			\
   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,			\
-  /* 6 DSP accumulator registers & 6 control registers */		\
-  0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1					\
+  /* 6 DSP accumulator registers & 6 control registers,			\
+     and hi1/lo1 for the R5900  */					\
+  0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0				\
 }
 
 
@@ -1711,8 +1719,9 @@ FP_ASM_SPEC "\
   /* COP3 registers */							\
   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,			\
   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,			\
-  /* 6 DSP accumulator registers & 6 control registers */		\
-  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1					\
+  /* 6 DSP accumulator registers & 6 control registers,			\
+     and hi1/lo1 for the R5900  */					\
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1				\
 }
 
 
@@ -1736,8 +1745,9 @@ FP_ASM_SPEC "\
   /* COP3 registers */							\
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,			\
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,			\
-  /* 6 DSP accumulator registers & 6 control registers */		\
-  1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0					\
+  /* 6 DSP accumulator registers & 6 control registers,			\
+     and hi1/lo1 for the R5900  */					\
+  1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1				\
 }
 
 /* Internal macros to classify a register number as to whether it's a
@@ -1799,9 +1809,15 @@ FP_ASM_SPEC "\
 #define DSP_ACC_REG_LAST 181
 #define DSP_ACC_REG_NUM (DSP_ACC_REG_LAST - DSP_ACC_REG_FIRST + 1)
 
+#define MD1_REG_FIRST 188
+#define MD1_REG_LAST  189
+#define MD1_REG_NUM   (MD1_REG_LAST - MD1_REG_FIRST + 1)
+
 #define AT_REGNUM	(GP_REG_FIRST + 1)
 #define HI_REGNUM	(TARGET_BIG_ENDIAN ? MD_REG_FIRST : MD_REG_FIRST + 1)
 #define LO_REGNUM	(TARGET_BIG_ENDIAN ? MD_REG_FIRST + 1 : MD_REG_FIRST)
+#define HI1_REGNUM	(TARGET_BIG_ENDIAN ? MD1_REG_FIRST : MD1_REG_FIRST + 1)
+#define LO1_REGNUM	(TARGET_BIG_ENDIAN ? MD1_REG_FIRST + 1 : MD1_REG_FIRST)
 
 /* A few bitfield locations for the coprocessor registers.  */
 /* Request Interrupt Priority Level is from bit 10 to bit 15 of
@@ -1844,7 +1860,10 @@ FP_ASM_SPEC "\
   ((unsigned int) ((int) (REGNO) - DSP_ACC_REG_FIRST) < DSP_ACC_REG_NUM)
 /* Test if REGNO is hi, lo, or one of the 6 new DSP accumulators.  */
 #define ACC_REG_P(REGNO) \
-  (MD_REG_P (REGNO) || DSP_ACC_REG_P (REGNO))
+  (MD_REG_P (REGNO) || MD1_REG_P (REGNO) || DSP_ACC_REG_P (REGNO))
+/* Test if REGNO is HI1 or LO1 registers of the 2nd pipeline to the R5900.  */
+#define MD1_REG_P(REGNO) \
+  ((unsigned int) ((int) (REGNO) - MD1_REG_FIRST) < MD1_REG_NUM)
 
 #define FP_REG_RTX_P(X) (REG_P (X) && FP_REG_P (REGNO (X)))
 
@@ -1996,6 +2015,9 @@ enum reg_class
   MD0_REG,			/* first multiply/divide register */
   MD1_REG,			/* second multiply/divide register */
   MD_REGS,			/* multiply/divide registers (hi/lo) */
+  MD1_0_REG,			/* 2nd pipeline, first multiply/divide register */
+  MD1_1_REG,			/* 2nd pipeline, second multiply/divide register */
+  MD1_REGS,			/* 2nd pipeline, multiply/divide registers (hi/lo) */
   COP0_REGS,			/* generic coprocessor classes */
   COP2_REGS,
   COP3_REGS,
@@ -2006,6 +2028,9 @@ enum reg_class
   GR_AND_MD0_REGS,		/* union classes */
   GR_AND_MD1_REGS,
   GR_AND_MD_REGS,
+  GR_AND_MD0_1_REGS,
+  GR_AND_MD1_1_REGS,
+  GR_AND_MD_1_REGS,
   GR_AND_ACC_REGS,
   ALL_REGS,			/* all registers */
   LIM_REG_CLASSES		/* max value + 1 */
@@ -2036,6 +2061,9 @@ enum reg_class
   "MD0_REG",								\
   "MD1_REG",								\
   "MD_REGS",								\
+  "MD1_0_REG",								\
+  "MD1_1_REG",								\
+  "MD1_REGS",								\
   /* coprocessor registers */						\
   "COP0_REGS",								\
   "COP2_REGS",								\
@@ -2047,6 +2075,9 @@ enum reg_class
   "GR_AND_MD0_REGS",							\
   "GR_AND_MD1_REGS",							\
   "GR_AND_MD_REGS",							\
+  "GR_AND_MD0_1_REGS",							\
+  "GR_AND_MD1_1_REGS",							\
+  "GR_AND_MD_1_REGS",							\
   "GR_AND_ACC_REGS",							\
   "ALL_REGS"								\
 }
@@ -2079,18 +2110,24 @@ enum reg_class
   { 0x00000000, 0x00000000, 0x00000001, 0x00000000, 0x00000000, 0x00000000 },	/* MD0_REG */		\
   { 0x00000000, 0x00000000, 0x00000002, 0x00000000, 0x00000000, 0x00000000 },	/* MD1_REG */		\
   { 0x00000000, 0x00000000, 0x00000003, 0x00000000, 0x00000000, 0x00000000 },	/* MD_REGS */		\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x10000000 },	/* MD1_0_REG */		\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x20000000 },	/* MD1_1_REG */		\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x30000000 },	/* MD1_REGS */		\
   { 0x00000000, 0x00000000, 0xffff0000, 0x0000ffff, 0x00000000, 0x00000000 },   /* COP0_REGS */		\
   { 0x00000000, 0x00000000, 0x00000000, 0xffff0000, 0x0000ffff, 0x00000000 },   /* COP2_REGS */		\
   { 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0xffff0000, 0x0000ffff },   /* COP3_REGS */		\
   { 0x00000000, 0x00000000, 0x000007f8, 0x00000000, 0x00000000, 0x00000000 },	/* ST_REGS */		\
   { 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x003f0000 },	/* DSP_ACC_REGS */	\
-  { 0x00000000, 0x00000000, 0x00000003, 0x00000000, 0x00000000, 0x003f0000 },	/* ACC_REGS */		\
+  { 0x00000000, 0x00000000, 0x00000003, 0x00000000, 0x00000000, 0x303f0000 },	/* ACC_REGS */		\
   { 0x00000000, 0x00000000, 0x00006000, 0x00000000, 0x00000000, 0x00000000 },	/* FRAME_REGS */	\
   { 0xffffffff, 0x00000000, 0x00000001, 0x00000000, 0x00000000, 0x00000000 },	/* GR_AND_MD0_REGS */	\
   { 0xffffffff, 0x00000000, 0x00000002, 0x00000000, 0x00000000, 0x00000000 },	/* GR_AND_MD1_REGS */	\
   { 0xffffffff, 0x00000000, 0x00000003, 0x00000000, 0x00000000, 0x00000000 },	/* GR_AND_MD_REGS */	\
-  { 0xffffffff, 0x00000000, 0x00000003, 0x00000000, 0x00000000, 0x003f0000 },	/* GR_AND_ACC_REGS */	\
-  { 0xffffffff, 0xffffffff, 0xffff67ff, 0xffffffff, 0xffffffff, 0x0fffffff }	/* ALL_REGS */		\
+  { 0xffffffff, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x10000000 },	/* GR_AND_MD0_1_REGS */	\
+  { 0xffffffff, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x20000000 },	/* GR_AND_MD1_1_REGS */	\
+  { 0xffffffff, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x30000000 },	/* GR_AND_MD_1_REGS */	\
+  { 0xffffffff, 0x00000000, 0x00000003, 0x00000000, 0x00000000, 0x303f0000 },	/* GR_AND_ACC_REGS */	\
+  { 0xffffffff, 0xffffffff, 0xffff67ff, 0xffffffff, 0xffffffff, 0x3fffffff }	/* ALL_REGS */		\
 }
 
 
@@ -2126,7 +2163,7 @@ enum reg_class
      point of definition.  It's also needed if we're to take advantage	\
      of the extra accumulators available with -mdspr2.  In some cases,	\
      it can also help to reduce register pressure.  */			\
-  64, 65,176,177,178,179,180,181,					\
+  64, 65,176,177,178,179,180,181, 188, 189,				\
   /* Call-clobbered GPRs.  */						\
   1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,		\
   24, 25, 31,								\
@@ -2720,7 +2757,7 @@ typedef struct mips_args {
   "$c3r16","$c3r17","$c3r18","$c3r19","$c3r20","$c3r21","$c3r22","$c3r23", \
   "$c3r24","$c3r25","$c3r26","$c3r27","$c3r28","$c3r29","$c3r30","$c3r31", \
   "$ac1hi","$ac1lo","$ac2hi","$ac2lo","$ac3hi","$ac3lo","$dsp_po","$dsp_sc", \
-  "$dsp_ca","$dsp_ou","$dsp_cc","$dsp_ef" }
+  "$dsp_ca","$dsp_ou","$dsp_cc","$dsp_ef", "hi1", "lo1" }
 
 /* List the "software" names for each register.  Also list the numerical
    names for $fp and $sp.  */

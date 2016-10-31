@@ -734,7 +734,8 @@ const enum reg_class mips_regno_to_class[FIRST_PSEUDO_REGISTER] = {
   COP3_REGS,	COP3_REGS,	COP3_REGS,	COP3_REGS,
   DSP_ACC_REGS,	DSP_ACC_REGS,	DSP_ACC_REGS,	DSP_ACC_REGS,
   DSP_ACC_REGS,	DSP_ACC_REGS,	ALL_REGS,	ALL_REGS,
-  ALL_REGS,	ALL_REGS,	ALL_REGS,	ALL_REGS
+  ALL_REGS,	ALL_REGS,	ALL_REGS,	ALL_REGS,
+  MD1_0_REG,	MD1_1_REG
 };
 
 /* The value of TARGET_ATTRIBUTE_TABLE.  */
@@ -4568,7 +4569,7 @@ mips_split_move (rtx dest, rtx src, enum mips_split_type split_type)
       else
 	gcc_unreachable ();
     }
-  else if (REG_P (dest) && REGNO (dest) == MD_REG_FIRST)
+  else if (REG_P (dest) && (REGNO (dest) == MD_REG_FIRST || REGNO (dest) == MD1_REG_FIRST))
     {
       low_dest = mips_subword (dest, false);
       mips_emit_move (low_dest, mips_subword (src, false));
@@ -4577,7 +4578,7 @@ mips_split_move (rtx dest, rtx src, enum mips_split_type split_type)
       else
 	emit_insn (gen_mthisi_di (dest, mips_subword (src, true), low_dest));
     }
-  else if (REG_P (src) && REGNO (src) == MD_REG_FIRST)
+  else if (REG_P (src) && (REGNO (src) == MD_REG_FIRST || REGNO (src) == MD1_REG_FIRST))
     {
       mips_emit_move (mips_subword (dest, false), mips_subword (src, false));
       if (TARGET_64BIT)
@@ -4678,6 +4679,9 @@ mips_output_move (rtx dest, rtx src)
 	  if (REGNO (dest) == LO_REGNUM)
 	    return "mtlo\t%z1";
 
+	  if (REGNO (dest) == LO1_REGNUM)
+	    return "mtlo1\t%z1";
+
 	  if (DSP_ACC_REG_P (REGNO (dest)))
 	    {
 	      static char retval[] = "mt__\t%z1,%q0";
@@ -4722,7 +4726,10 @@ mips_output_move (rtx dest, rtx src)
 		return dbl_p ? "dmacc\t%0,%.,%." : "macc\t%0,%.,%.";
 	      return "mflo\t%0";
 	    }
-
+	  if (REGNO (src) == LO1_REGNUM)
+	    {
+	      return "mflo1\t%0";
+	    }
 	  if (DSP_ACC_REG_P (REGNO (src)))
 	    {
 	      static char retval[] = "mf__\t%0,%q1";
@@ -8457,6 +8464,7 @@ mips_print_operand_punct_valid_p (unsigned char code)
    'Y'	Print mips_fp_conditions[INTVAL (OP)]
    'Z'	Print OP and a comma for ISA_HAS_8CC, otherwise print nothing.
    'q'	Print a DSP accumulator register.
+   'H'	Print the integer pipeline number of the R5900.
    'D'	Print the second part of a double-word register or memory operand.
    'L'	Print the low-order register in a double-word register operand.
    'M'	Print high-order register in a double-word register operand.
@@ -8578,6 +8586,11 @@ mips_print_operand (FILE *file, rtx op, int letter)
 	fprintf (file, "$ac%c", reg_names[REGNO (op)][3]);
       else
 	output_operand_lossage ("invalid use of '%%%c'", letter);
+      break;
+
+    case 'H':
+      if (code == REG && MD1_REG_P (REGNO (op)))
+	fprintf (file, "1");
       break;
 
     default:
@@ -10117,7 +10130,7 @@ static bool
 mips_interrupt_extra_call_saved_reg_p (unsigned int regno)
 {
   if ((ISA_HAS_HILO || TARGET_DSP)
-      && MD_REG_P (regno))
+      && (MD_REG_P (regno) || MD1_REG_P (regno)))
     return true;
 
   if (TARGET_DSP && DSP_ACC_REG_P (regno))
@@ -10442,12 +10455,19 @@ mips_compute_frame_info (void)
 	  frame->acc_mask |= (1 << 0);
 	}
 
+      /* Check HI1/LO1.  */
+      if (mips_save_reg_p (LO1_REGNUM) || mips_save_reg_p (HI1_REGNUM))
+	{
+	  frame->num_acc++;
+	  frame->acc_mask |= (1 << 1);
+	}
+
       /* Check accumulators 1, 2, 3.  */
       for (i = DSP_ACC_REG_FIRST; i <= DSP_ACC_REG_LAST; i += 2)
 	if (mips_save_reg_p (i) || mips_save_reg_p (i + 1))
 	  {
 	    frame->num_acc++;
-	    frame->acc_mask |= 1 << (((i - DSP_ACC_REG_FIRST) / 2) + 1);
+	    frame->acc_mask |= 1 << (((i - DSP_ACC_REG_FIRST) / 2) + 2);
 	  }
 
       /* All interrupt context functions need space to preserve STATUS.  */
@@ -10792,9 +10812,17 @@ mips_for_each_saved_acc (HOST_WIDE_INT sp_offset, mips_save_restore_fn fn)
       offset -= UNITS_PER_WORD;
     }
 
+  if (BITSET_P (cfun->machine->frame.acc_mask, 1))
+    {
+      mips_save_restore_reg (word_mode, LO1_REGNUM, offset, fn);
+      offset -= UNITS_PER_WORD;
+      mips_save_restore_reg (word_mode, HI1_REGNUM, offset, fn);
+      offset -= UNITS_PER_WORD;
+    }
+
   for (regno = DSP_ACC_REG_FIRST; regno <= DSP_ACC_REG_LAST; regno++)
     if (BITSET_P (cfun->machine->frame.acc_mask,
-		  ((regno - DSP_ACC_REG_FIRST) / 2) + 1))
+		  ((regno - DSP_ACC_REG_FIRST) / 2) + 2))
       {
 	mips_save_restore_reg (word_mode, regno, offset, fn);
 	offset -= UNITS_PER_WORD;
@@ -11048,6 +11076,29 @@ mips_emit_save_slot_move (rtx dest, rtx src, rtx temp)
 	  else
 	    emit_insn (gen_mfhisi_di (temp,
 				      gen_rtx_REG (DImode, MD_REG_FIRST)));
+	  mips_emit_move (dest, temp);
+	}
+    }
+  else if (regno == HI1_REGNUM)
+    {
+      if (REG_P (dest))
+	{
+	  mips_emit_move (temp, src);
+	  if (TARGET_64BIT)
+	    emit_insn (gen_mthisi_di (gen_rtx_REG (TImode, MD1_REG_FIRST),
+				      temp, gen_rtx_REG (DImode, LO1_REGNUM)));
+	  else
+	    emit_insn (gen_mthisi_di (gen_rtx_REG (DImode, MD1_REG_FIRST),
+				      temp, gen_rtx_REG (SImode, LO1_REGNUM)));
+	}
+      else
+	{
+	  if (TARGET_64BIT)
+	    emit_insn (gen_mfhidi_ti (temp,
+				      gen_rtx_REG (TImode, MD1_REG_FIRST)));
+	  else
+	    emit_insn (gen_mfhisi_di (temp,
+				      gen_rtx_REG (DImode, MD1_REG_FIRST)));
 	  mips_emit_move (dest, temp);
 	}
     }
@@ -12148,6 +12199,12 @@ mips_hard_regno_mode_ok_p (unsigned int regno, machine_mode mode)
 	  if (size <= UNITS_PER_WORD * 2)
 	    return regno == (size <= UNITS_PER_WORD ? LO_REGNUM : MD_REG_FIRST);
 	}
+	  else if (MD1_REG_P (regno))
+	{
+	  /* Same as above.  */
+	  if (size <= UNITS_PER_WORD * 2)
+	    return regno == (size <= UNITS_PER_WORD ? LO1_REGNUM : MD1_REG_FIRST);
+	}
       else
 	{
 	  /* DSP accumulators do not have the same restrictions as
@@ -12824,6 +12881,7 @@ mips_adjust_insn_length (rtx_insn *insn, int length)
 	length += NOP_INSN_LENGTH;
 	break;
 
+      case HAZARD_HILO1:
       case HAZARD_HILO:
 	length += NOP_INSN_LENGTH * 2;
 	break;
@@ -16499,11 +16557,12 @@ mips_orphaned_high_part_p (mips_offset_table *htab, rtx_insn *insn)
    After inserting nops for INSN, update *DELAYED_REG and *HILO_DELAY
    for the next instruction.
 
-   LO_REG is an rtx for the LO register, used in dependence checking.  */
+   LO_REG is an rtx for the LO register, used in dependence checking.
+   LO1_REG and HILO1_DELAY are the equivalents for the 2nd pipeline.  */
 
 static void
-mips_avoid_hazard (rtx_insn *after, rtx_insn *insn, int *hilo_delay,
-		   rtx *delayed_reg, rtx lo_reg)
+mips_avoid_hazard (rtx_insn *after, rtx_insn *insn, int *hilo_delay, int *hilo1_delay,
+		   rtx *delayed_reg, rtx lo_reg, rtx lo1_reg)
 {
   rtx pattern, set;
   int nops, ninsns;
@@ -16527,6 +16586,8 @@ mips_avoid_hazard (rtx_insn *after, rtx_insn *insn, int *hilo_delay,
      clobber hi and lo.  */
   if (*hilo_delay < 2 && reg_set_p (lo_reg, pattern))
     nops = 2 - *hilo_delay;
+  else if (*hilo1_delay < 2 && reg_set_p (lo1_reg, pattern))
+    nops = 2 - *hilo1_delay;
   else if (*delayed_reg != 0 && reg_referenced_p (*delayed_reg, pattern))
     nops = 1;
   else
@@ -16535,16 +16596,22 @@ mips_avoid_hazard (rtx_insn *after, rtx_insn *insn, int *hilo_delay,
   /* Insert the nops between this instruction and the previous one.
      Each new nop takes us further from the last hilo hazard.  */
   *hilo_delay += nops;
+  *hilo1_delay += nops;
   while (nops-- > 0)
     emit_insn_after (gen_hazard_nop (), after);
 
   /* Set up the state for the next instruction.  */
   *hilo_delay += ninsns;
+  *hilo1_delay += ninsns;
   *delayed_reg = 0;
   if (INSN_CODE (insn) >= 0)
     switch (get_attr_hazard (insn))
       {
       case HAZARD_NONE:
+	break;
+
+      case HAZARD_HILO1:
+	*hilo1_delay = 0;
 	break;
 
       case HAZARD_HILO:
@@ -16568,8 +16635,8 @@ static void
 mips_reorg_process_insns (void)
 {
   rtx_insn *insn, *last_insn, *subinsn, *next_insn;
-  rtx lo_reg, delayed_reg;
-  int hilo_delay;
+  rtx lo_reg, lo1_reg, delayed_reg;
+  int hilo_delay, hilo1_delay;
 
   /* Force all instructions to be split into their final form.  */
   split_all_insns_noflow ();
@@ -16636,8 +16703,10 @@ mips_reorg_process_insns (void)
 
   last_insn = 0;
   hilo_delay = 2;
+  hilo1_delay = 2;
   delayed_reg = 0;
   lo_reg = gen_rtx_REG (SImode, LO_REGNUM);
+  lo1_reg = gen_rtx_REG (SImode, LO1_REGNUM);
 
   /* Make a second pass over the instructions.  Delete orphaned
      high-part relocations or turn them into NOPs.  Avoid hazards
@@ -16660,8 +16729,8 @@ mips_reorg_process_insns (void)
 			PATTERN (subinsn) = gen_nop ();
 			INSN_CODE (subinsn) = CODE_FOR_nop;
 		      }
-		    mips_avoid_hazard (last_insn, subinsn, &hilo_delay,
-				       &delayed_reg, lo_reg);
+		    mips_avoid_hazard (last_insn, subinsn, &hilo_delay, &hilo1_delay,
+				       &delayed_reg, lo_reg, lo1_reg);
 		  }
 	      last_insn = insn;
 	    }
@@ -16681,8 +16750,8 @@ mips_reorg_process_insns (void)
 		delete_insn (insn);
 	      else
 		{
-		  mips_avoid_hazard (last_insn, insn, &hilo_delay,
-				     &delayed_reg, lo_reg);
+		  mips_avoid_hazard (last_insn, insn, &hilo_delay, &hilo1_delay,
+				     &delayed_reg, lo_reg, lo1_reg);
 		  last_insn = insn;
 		}
 	    }
@@ -17744,6 +17813,8 @@ mips_option_override (void)
   mips_dbx_regno[LO_REGNUM] = MD_DBX_FIRST + 1;
   mips_dwarf_regno[HI_REGNUM] = MD_REG_FIRST + 0;
   mips_dwarf_regno[LO_REGNUM] = MD_REG_FIRST + 1;
+  mips_dwarf_regno[HI1_REGNUM] = MD1_REG_FIRST + 0;
+  mips_dwarf_regno[LO1_REGNUM] = MD1_REG_FIRST + 1;
   for (i = DSP_ACC_REG_FIRST; i <= DSP_ACC_REG_LAST; i += 2)
     {
       mips_dwarf_regno[i + TARGET_LITTLE_ENDIAN] = i;
@@ -17872,8 +17943,16 @@ mips_conditional_register_usage (void)
 			    reg_class_contents[(int) DSP_ACC_REGS]);
 
   if (!ISA_HAS_HILO)
+    {
     AND_COMPL_HARD_REG_SET (accessible_reg_set,
 			    reg_class_contents[(int) MD_REGS]);
+    AND_COMPL_HARD_REG_SET (accessible_reg_set,
+			    reg_class_contents[(int) MD1_REGS]);
+    }
+
+  if (!TARGET_MIPS5900)
+      AND_COMPL_HARD_REG_SET (accessible_reg_set,
+		    reg_class_contents[(int) MD1_REGS]);
 
   if (!TARGET_HARD_FLOAT)
     {
@@ -17932,6 +18011,8 @@ mips_conditional_register_usage (void)
 	 for them) and one-way registers cannot easily be reloaded.  */
       AND_COMPL_HARD_REG_SET (operand_reg_set,
 			      reg_class_contents[(int) MD_REGS]);
+      AND_COMPL_HARD_REG_SET (operand_reg_set,
+			      reg_class_contents[(int) MD1_REGS]);
     }
   /* $f20-$f23 are call-clobbered for n64.  */
   if (mips_abi == ABI_64)
@@ -17957,6 +18038,7 @@ mips_conditional_register_usage (void)
       unsigned int regno;
 
       mips_swap_registers (MD_REG_FIRST);
+      mips_swap_registers (MD1_REG_FIRST);
       for (regno = DSP_ACC_REG_FIRST; regno <= DSP_ACC_REG_LAST; regno += 2)
 	mips_swap_registers (regno);
     }

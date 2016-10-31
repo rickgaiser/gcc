@@ -222,7 +222,7 @@
 (define_attr "move_type"
   "unknown,load,fpload,store,fpstore,mtc,mfc,mtlo,mflo,imul,move,fmove,
    const,constN,signext,ext_ins,logical,arith,sll0,andi,loadpool,
-   shift_shift"
+   shift_shift,mtlo1,mflo1"
   (const_string "unknown"))
 
 (define_attr "alu_type" "unknown,add,sub,not,nor,and,or,xor"
@@ -315,6 +315,10 @@
 ;; mtlo		transfer to a lo register
 ;; mfhi		transfer from a hi register
 ;; mflo		transfer from a lo register
+;; mthi1	transfer to a hi1 register
+;; mtlo1	transfer to a lo1 register
+;; mfhi1	transfer from a hi1 register
+;; mflo1	transfer from a lo1 register
 ;; const	load constant
 ;; arith	integer arithmetic instructions
 ;; logical      integer logical instructions
@@ -365,7 +369,7 @@
    shift,slt,signext,clz,pop,trap,imul,imul3,imul3nc,imadd,idiv,idiv3,move,
    fmove,fadd,fmul,fmadd,fdiv,frdiv,frdiv1,frdiv2,fabs,fneg,fcmp,fcvt,fsqrt,
    frsqrt,frsqrt1,frsqrt2,dspmac,dspmacsat,accext,accmod,dspalu,dspalusat,
-   multi,atomic,syncloop,nop,ghost,multimem"
+   multi,atomic,syncloop,nop,ghost,multimem,mthi1,mtlo1,mfhi1,mflo1"
   (cond [(eq_attr "jal" "!unset") (const_string "call")
 	 (eq_attr "got" "load") (const_string "load")
 
@@ -384,6 +388,8 @@
 	 (eq_attr "move_type" "mfc") (const_string "mfc")
 	 (eq_attr "move_type" "mtlo") (const_string "mtlo")
 	 (eq_attr "move_type" "mflo") (const_string "mflo")
+	 (eq_attr "move_type" "mtlo1") (const_string "mtlo1")
+	 (eq_attr "move_type" "mflo1") (const_string "mflo1")
 
 	 ;; These types of move are always single insns.
 	 (eq_attr "move_type" "imul") (const_string "imul")
@@ -473,7 +479,7 @@
 	 ;; Check for doubleword moves that are decomposed into two
 	 ;; instructions.  The individual instructions are unextended
 	 ;; MIPS16 ones.
-	 (and (eq_attr "move_type" "mtc,mfc,mtlo,mflo,move")
+	 (and (eq_attr "move_type" "mtc,mfc,mtlo,mflo,move,mtlo1,mflo1")
 	      (eq_attr "dword_mode" "yes"))
 	 (const_int 2)
 
@@ -694,7 +700,7 @@
 ;; DELAY means that the next instruction cannot read the result
 ;; of this one.  HILO means that the next two instructions cannot
 ;; write to HI or LO.
-(define_attr "hazard" "none,delay,hilo"
+(define_attr "hazard" "none,delay,hilo,hilo1"
   (cond [(and (eq_attr "type" "load,fpload,fpidxload")
 	      (match_test "ISA_HAS_LOAD_DELAY"))
 	 (const_string "delay")
@@ -714,7 +720,11 @@
 
 	 (and (eq_attr "type" "mfhi,mflo")
 	      (not (match_test "ISA_HAS_HILO_INTERLOCKS")))
-	 (const_string "hilo")]
+	 (const_string "hilo")
+
+	 (and (eq_attr "type" "mfhi1,mflo1")
+	      (not (match_test "ISA_HAS_HILO_INTERLOCKS")))
+	 (const_string "hilo1")]
 	(const_string "none")))
 
 ;; Can the instruction be put into a delay slot?
@@ -1095,6 +1105,7 @@
 (include "5000.md")
 (include "5400.md")
 (include "5500.md")
+(include "5900.md")
 (include "6000.md")
 (include "7000.md")
 (include "9000.md")
@@ -1530,7 +1541,12 @@
     emit_insn (gen_mul<mode>3_mul3_nohilo (operands[0], operands[1],
 					   operands[2]));
   else if (ISA_HAS_<D>MUL3)
+    {
+	  if (TARGET_MIPS5900)
+	    emit_insn (gen_mul<mode>3_mul3_r5900 (operands[0], operands[1], operands[2]));
+	  else
     emit_insn (gen_mul<mode>3_mul3 (operands[0], operands[1], operands[2]));
+	}
   else if (TARGET_MIPS16)
     {
       lo = gen_rtx_REG (<MODE>mode, LO_REGNUM);
@@ -1566,13 +1582,30 @@
 	(mult:GPR (match_operand:GPR 1 "register_operand" "d,d")
 		  (match_operand:GPR 2 "register_operand" "d,d")))
    (clobber (match_scratch:GPR 3 "=l,X"))]
-  "ISA_HAS_<D>MUL3"
+  "ISA_HAS_<D>MUL3 && !TARGET_MIPS5900"
 {
   if (which_alternative == 1)
     return "<d>mult\t%1,%2";
-  if (<MODE>mode == SImode && (TARGET_MIPS3900 || TARGET_MIPS5900))
+  if (<MODE>mode == SImode && TARGET_MIPS3900)
     return "mult\t%0,%1,%2";
   return "<d>mul\t%0,%1,%2";
+}
+  [(set_attr "type" "imul3,imul")
+   (set_attr "mode" "<MODE>")])
+
+(define_insn "mul<mode>3_mul3_r5900"
+  [(set (match_operand:GPR 0 "register_operand" "=d,lwl")
+	(mult:GPR (match_operand:GPR 1 "register_operand" "d,d")
+		  (match_operand:GPR 2 "register_operand" "d,d")))
+   (clobber (match_scratch:GPR 3 "=lwl,X"))]
+  "ISA_HAS_<D>MUL3 && TARGET_MIPS5900"
+{
+  if (which_alternative == 1)
+    return "<d>mult%H0\t%1,%2";
+
+  if (<MODE>mode == SImode)
+      return "mult%H3\t%0,%1,%2";
+  return "<d>mul%H3\t%0,%1,%2";
 }
   [(set_attr "type" "imul3,imul")
    (set_attr "mode" "<MODE>")])
@@ -1601,13 +1634,21 @@
         (clobber (match_dup 0))])])
 
 (define_insn "mul<mode>3_internal"
-  [(set (match_operand:GPR 0 "muldiv_target_operand" "=l")
-	(mult:GPR (match_operand:GPR 1 "register_operand" "d")
-		  (match_operand:GPR 2 "register_operand" "d")))]
+  [(set (match_operand:GPR 0 "muldiv_target_operand" "=l,lwl")
+	(mult:GPR (match_operand:GPR 1 "register_operand" "d,d")
+		  (match_operand:GPR 2 "register_operand" "d,d")))]
   "ISA_HAS_<D>MULT && !TARGET_FIX_R4000"
-  "<d>mult\t%1,%2"
-  [(set_attr "type" "imul")
-   (set_attr "mode" "<MODE>")])
+  { return TARGET_MIPS5900 ? "<d>mult%H0\t%1,%2" : "<d>mult\t%1,%2"; }
+  [(set_attr "type" "imul,imul")
+   (set_attr "mode" "<MODE>")
+   (set (attr "enabled")
+        (cond [(and (eq_attr "alternative" "0")
+                    (eq_attr "cpu" "!r5900"))
+                  (const_string "yes")
+               (and (eq_attr "alternative" "1")
+                    (eq_attr "cpu" "r5900"))
+                  (const_string "yes")]
+              (const_string "no")))])
 
 (define_insn "mul<mode>3_r4000"
   [(set (match_operand:GPR 0 "register_operand" "=d")
@@ -1675,7 +1716,7 @@
 		 (match_operand:SI 3 "register_operand" "0,0,d")))
    (clobber (match_scratch:SI 4 "=X,X,l"))
    (clobber (match_scratch:SI 5 "=X,X,&d"))]
-  "GENERATE_MADD_MSUB && !TARGET_MIPS16"
+  "GENERATE_MADD_MSUB && !TARGET_MIPS16 && !TARGET_MIPS5900"
   "@
     madd\t%1,%2
     madd\t%1,%2
@@ -1722,6 +1763,34 @@
                     (match_test "mips_lra_flag"))
                   (const_string "yes")
                (eq_attr "alternative" "2,3")
+                  (const_string "yes")]
+              (const_string "no")))])
+
+;; The same idea applies here.
+(define_insn "*mul_acc_si_r5900"
+  [(set (match_operand:SI 0 "register_operand" "=l*?*?wl*?*?,lwl,d?")
+	(plus:SI (mult:SI (match_operand:SI 1 "register_operand" "d,d,d")
+			  (match_operand:SI 2 "register_operand" "d,d,d"))
+		 (match_operand:SI 3 "register_operand" "0,0,d")))
+   (clobber (match_scratch:SI 4 "=X,X,lwl"))
+   (clobber (match_scratch:SI 5 "=X,X,&d"))]
+  "GENERATE_MADD_MSUB && TARGET_MIPS5900"
+  "@
+    madd%H0\t%1,%2
+    madd%H0\t%1,%2
+    #"
+  [(set_attr "type"	"imadd")
+   (set_attr "accum_in"	"3")
+   (set_attr "mode"	"SI")
+   (set_attr "insn_count" "1,1,2")
+   (set (attr "enabled")
+        (cond [(and (eq_attr "alternative" "0")
+                    (match_test "!mips_lra_flag"))
+                  (const_string "yes")
+               (and (eq_attr "alternative" "1")
+                    (match_test "mips_lra_flag"))
+                  (const_string "yes")
+               (eq_attr "alternative" "2")
                   (const_string "yes")]
               (const_string "no")))])
 
@@ -1933,7 +2002,7 @@
                            (match_operand:SI 3 "register_operand" "d,d,d"))))
    (clobber (match_scratch:SI 4 "=X,X,l"))
    (clobber (match_scratch:SI 5 "=X,X,&d"))]
-  "GENERATE_MADD_MSUB"
+  "GENERATE_MADD_MSUB && !TARGET_MIPS5900"
   "@
    msub\t%2,%3
    msub\t%2,%3
@@ -2028,18 +2097,28 @@
 ;; __builtin_mips_mult<u>() functions.  We must always make those functions
 ;; available if !TARGET_64BIT && ISA_HAS_DSP.
 (define_insn "<u>mulsidi3_32bit"
-  [(set (match_operand:DI 0 "muldiv_target_operand" "=ka")
-	(mult:DI (any_extend:DI (match_operand:SI 1 "register_operand" "d"))
-		 (any_extend:DI (match_operand:SI 2 "register_operand" "d"))))]
+  [(set (match_operand:DI 0 "muldiv_target_operand" "=ka,kawr")
+	(mult:DI (any_extend:DI (match_operand:SI 1 "register_operand" "d,d"))
+		 (any_extend:DI (match_operand:SI 2 "register_operand" "d,d"))))]
   "!TARGET_64BIT && (!TARGET_FIX_R4000 || ISA_HAS_DSP) && ISA_HAS_MULT"
 {
   if (ISA_HAS_DSP_MULT)
     return "mult<u>\t%q0,%1,%2";
+  else if(TARGET_MIPS5900)
+    return "mult<u>%H0\t%1,%2";
   else
     return "mult<u>\t%1,%2";
 }
-  [(set_attr "type" "imul")
-   (set_attr "mode" "SI")])
+  [(set_attr "type" "imul,imul")
+   (set_attr "mode" "SI")
+   (set (attr "enabled")
+        (cond [(and (eq_attr "alternative" "0")
+                    (eq_attr "cpu" "!r5900"))
+                  (const_string "yes")
+               (and (eq_attr "alternative" "1")
+                    (eq_attr "cpu" "r5900"))
+                  (const_string "yes")]
+              (const_string "no")))])
 
 (define_insn "<u>mulsidi3_32bit_r4000"
   [(set (match_operand:DI 0 "register_operand" "=d")
@@ -2053,11 +2132,11 @@
    (set_attr "insn_count" "3")])
 
 (define_insn_and_split "<u>mulsidi3_64bit"
-  [(set (match_operand:DI 0 "register_operand" "=d")
-	(mult:DI (any_extend:DI (match_operand:SI 1 "register_operand" "d"))
-		 (any_extend:DI (match_operand:SI 2 "register_operand" "d"))))
-   (clobber (match_scratch:TI 3 "=x"))
-   (clobber (match_scratch:DI 4 "=d"))]
+  [(set (match_operand:DI 0 "register_operand" "=d,d")
+	(mult:DI (any_extend:DI (match_operand:SI 1 "register_operand" "d,d"))
+		 (any_extend:DI (match_operand:SI 2 "register_operand" "d,d"))))
+   (clobber (match_scratch:TI 3 "=x,xwr"))
+   (clobber (match_scratch:DI 4 "=d,d"))]
   "TARGET_64BIT && !TARGET_FIX_R4000 && !ISA_HAS_DMUL3
    && !TARGET_MIPS16 && ISA_HAS_MULT"
   "#"
@@ -2065,15 +2144,23 @@
   [(const_int 0)]
 {
   emit_insn (gen_<u>mulsidi3_64bit_split (operands[0], operands[1],
-					  operands[2], operands[4]));
+					  operands[2], operands[4], operands[3]));
   DONE;
 }
-  [(set_attr "type" "imul")
+  [(set_attr "type" "imul,imul")
    (set_attr "mode" "SI")
    (set (attr "insn_count")
 	(if_then_else (match_test "ISA_HAS_EXT_INS")
 		      (const_int 4)
-		      (const_int 7)))])
+		      (const_int 7)))
+   (set (attr "enabled")
+        (cond [(and (eq_attr "alternative" "0")
+                    (eq_attr "cpu" "!r5900"))
+                  (const_string "yes")
+               (and (eq_attr "alternative" "1")
+                    (eq_attr "cpu" "r5900"))
+                  (const_string "yes")]
+              (const_string "no")))])
 
 (define_expand "<u>mulsidi3_64bit_mips16"
   [(set (match_operand:DI 0 "register_operand")
@@ -2082,7 +2169,7 @@
   "TARGET_64BIT && TARGET_MIPS16"
 {
   emit_insn (gen_<u>mulsidi3_64bit_split (operands[0], operands[1],
-					  operands[2], gen_reg_rtx (DImode)));
+					  operands[2], gen_reg_rtx (DImode), gen_reg_rtx (TImode)));
   DONE;
 })
 
@@ -2090,16 +2177,14 @@
   [(set (match_operand:DI 0 "register_operand")
 	(mult:DI (any_extend:DI (match_operand:SI 1 "register_operand"))
 		 (any_extend:DI (match_operand:SI 2 "register_operand"))))
-   (clobber (match_operand:DI 3 "register_operand"))]
+   (clobber (match_operand:DI 3 "register_operand"))
+   (clobber (match_operand:TI 4 "hilo_operand"))]
   ""
 {
-  rtx hilo;
+  emit_insn (gen_<u>mulsidi3_64bit_hilo (operands[4], operands[1], operands[2]));
 
-  hilo = gen_rtx_REG (TImode, MD_REG_FIRST);
-  emit_insn (gen_<u>mulsidi3_64bit_hilo (hilo, operands[1], operands[2]));
-
-  emit_move_insn (operands[0], gen_rtx_REG (DImode, LO_REGNUM));
-  emit_insn (gen_mfhidi_ti (operands[3], hilo));
+  emit_move_insn (operands[0], gen_rtx_REG (DImode, MD_REG_P ( REGNO (operands[4])) ? LO_REGNUM : LO1_REGNUM));
+  emit_insn (gen_mfhidi_ti (operands[3], operands[4]));
 
   if (ISA_HAS_EXT_INS)
     emit_insn (gen_insvdi (operands[0], GEN_INT (32), GEN_INT (32),
@@ -2120,16 +2205,24 @@
 })
 
 (define_insn "<u>mulsidi3_64bit_hilo"
-  [(set (match_operand:TI 0 "muldiv_target_operand" "=x")
+  [(set (match_operand:TI 0 "muldiv_target_operand" "=x,xwr")
 	(unspec:TI
 	  [(mult:DI
-	     (any_extend:DI (match_operand:SI 1 "register_operand" "d"))
-	     (any_extend:DI (match_operand:SI 2 "register_operand" "d")))]
+	     (any_extend:DI (match_operand:SI 1 "register_operand" "d,d"))
+	     (any_extend:DI (match_operand:SI 2 "register_operand" "d,d")))]
 	  UNSPEC_SET_HILO))]
   "TARGET_64BIT && !TARGET_FIX_R4000"
-  "mult<u>\t%1,%2"
-  [(set_attr "type" "imul")
-   (set_attr "mode" "SI")])
+  { return TARGET_MIPS5900 ? "mult<u>%H0\t%1,%2" : "mult<u>\t%1,%2"; }
+  [(set_attr "type" "imul,imul")
+   (set_attr "mode" "SI")
+   (set (attr "enabled")
+        (cond [(and (eq_attr "alternative" "0")
+                    (eq_attr "cpu" "!r5900"))
+                  (const_string "yes")
+               (and (eq_attr "alternative" "1")
+                    (eq_attr "cpu" "r5900"))
+                  (const_string "yes")]
+              (const_string "no")))])
 
 ;; See comment before the ISA_HAS_DMUL3 case in mips_mulsidi3_gen_fn.
 (define_insn "mulsidi3_64bit_dmul"
@@ -2177,7 +2270,7 @@
 	   (mult:DI
 	      (any_extend:DI (match_operand:SI 1 "register_operand" "d"))
 	      (any_extend:DI (match_operand:SI 2 "register_operand" "d")))))]
-  "!TARGET_64BIT && (ISA_HAS_MSAC || GENERATE_MADD_MSUB || ISA_HAS_DSP)"
+  "!TARGET_64BIT && !TARGET_MIPS5900 && (ISA_HAS_MSAC || GENERATE_MADD_MSUB || ISA_HAS_DSP)"
 {
   if (ISA_HAS_DSP_MULT)
     return "msub<u>\t%q0,%1,%2";
@@ -2446,12 +2539,12 @@
 ;; See the comment above <u>msubsidi4 for the relationship between
 ;; ISA_HAS_DSP and ISA_HAS_DSP_MULT.
 (define_insn "<u>maddsidi4"
-  [(set (match_operand:DI 0 "muldiv_target_operand" "=ka")
+  [(set (match_operand:DI 0 "muldiv_target_operand" "=ka,kawr")
 	(plus:DI
-	 (mult:DI (any_extend:DI (match_operand:SI 1 "register_operand" "d"))
-		  (any_extend:DI (match_operand:SI 2 "register_operand" "d")))
-	 (match_operand:DI 3 "muldiv_target_operand" "0")))]
-  "(TARGET_MAD || ISA_HAS_MACC || GENERATE_MADD_MSUB || ISA_HAS_DSP)
+	 (mult:DI (any_extend:DI (match_operand:SI 1 "register_operand" "d,d"))
+		  (any_extend:DI (match_operand:SI 2 "register_operand" "d,d")))
+	 (match_operand:DI 3 "muldiv_target_operand" "0,0")))]
+  "(TARGET_MAD || ISA_HAS_MACC || GENERATE_MADD_MSUB || ISA_HAS_DSP || TARGET_MIPS5900)
    && !TARGET_64BIT"
 {
   if (TARGET_MAD)
@@ -2460,13 +2553,23 @@
     return "madd<u>\t%q0,%1,%2";
   else if (GENERATE_MADD_MSUB || TARGET_MIPS5500)
     return "madd<u>\t%1,%2";
+  else if (TARGET_MIPS5900)
+    return "madd<u>%H0\t%1,%2";
   else
     /* See comment in *macc.  */
     return "%[macc<u>\t%@,%1,%2%]";
 }
-  [(set_attr "type" "imadd")
+  [(set_attr "type" "imadd,imadd")
    (set_attr "accum_in"	"3")
-   (set_attr "mode" "SI")])
+   (set_attr "mode" "SI")
+   (set (attr "enabled")
+        (cond [(and (eq_attr "alternative" "0")
+                    (eq_attr "cpu" "!r5900"))
+                  (const_string "yes")
+               (and (eq_attr "alternative" "1")
+                    (eq_attr "cpu" "r5900"))
+                  (const_string "yes")]
+              (const_string "no")))])
 
 ;; Floating point multiply accumulate instructions.
 
@@ -2734,10 +2837,10 @@
 })
 
 (define_insn_and_split "*divmod<mode>4"
-  [(set (match_operand:GPR 0 "register_operand" "=l")
-	(div:GPR (match_operand:GPR 1 "register_operand" "d")
-		 (match_operand:GPR 2 "register_operand" "d")))
-   (set (match_operand:GPR 3 "register_operand" "=d")
+  [(set (match_operand:GPR 0 "register_operand" "=l,lwl")
+	(div:GPR (match_operand:GPR 1 "register_operand" "d,d")
+		 (match_operand:GPR 2 "register_operand" "d,d")))
+   (set (match_operand:GPR 3 "register_operand" "=d,d")
 	(mod:GPR (match_dup 1)
 		 (match_dup 2)))]
   "ISA_HAS_<D>DIV && !TARGET_FIX_VR4120 && !TARGET_MIPS16"
@@ -2745,12 +2848,20 @@
   "&& reload_completed"
   [(const_int 0)]
 {
-  emit_insn (gen_divmod<mode>4_split (operands[3], operands[1], operands[2]));
+  emit_insn (gen_divmod<mode>4_split (operands[3], operands[1], operands[2], operands[0]));
   DONE;
 }
- [(set_attr "type" "idiv")
+ [(set_attr "type" "idiv,idiv")
   (set_attr "mode" "<MODE>")
-  (set_attr "insn_count" "2")])
+  (set_attr "insn_count" "2,2")
+  (set (attr "enabled")
+        (cond [(and (eq_attr "alternative" "0")
+                    (eq_attr "cpu" "!r5900"))
+                  (const_string "yes")
+               (and (eq_attr "alternative" "1")
+                    (eq_attr "cpu" "r5900"))
+                  (const_string "yes")]
+              (const_string "no")))])
 
 ;; Expand generates divmod instructions for individual division and modulus
 ;; operations.  We then rely on CSE to reuse earlier divmods where possible.
@@ -2771,7 +2882,7 @@
   "&& cse_not_expected"
   [(const_int 0)]
 {
-  emit_insn (gen_divmod<mode>4_split (operands[3], operands[1], operands[2]));
+  emit_insn (gen_divmod<mode>4_split (operands[3], operands[1], operands[2], operands[4]));
   emit_move_insn (operands[0], operands[4]);
   DONE;
 }
@@ -2799,10 +2910,10 @@
 })
 
 (define_insn_and_split "*udivmod<mode>4"
-  [(set (match_operand:GPR 0 "register_operand" "=l")
-	(udiv:GPR (match_operand:GPR 1 "register_operand" "d")
-		  (match_operand:GPR 2 "register_operand" "d")))
-   (set (match_operand:GPR 3 "register_operand" "=d")
+  [(set (match_operand:GPR 0 "register_operand" "=l,lwl")
+	(udiv:GPR (match_operand:GPR 1 "register_operand" "d,d")
+		  (match_operand:GPR 2 "register_operand" "d,d")))
+   (set (match_operand:GPR 3 "register_operand" "=d,d")
 	(umod:GPR (match_dup 1)
 		  (match_dup 2)))]
   "ISA_HAS_<D>DIV && !TARGET_MIPS16"
@@ -2810,12 +2921,20 @@
   "reload_completed"
   [(const_int 0)]
 {
-  emit_insn (gen_udivmod<mode>4_split (operands[3], operands[1], operands[2]));
+  emit_insn (gen_udivmod<mode>4_split (operands[3], operands[1], operands[2], operands[0]));
   DONE;
 }
-  [(set_attr "type" "idiv")
+  [(set_attr "type" "idiv,idiv")
    (set_attr "mode" "<MODE>")
-   (set_attr "insn_count" "2")])
+   (set_attr "insn_count" "2,2")
+   (set (attr "enabled")
+        (cond [(and (eq_attr "alternative" "0")
+                    (eq_attr "cpu" "!r5900"))
+                  (const_string "yes")
+               (and (eq_attr "alternative" "1")
+                    (eq_attr "cpu" "r5900"))
+                  (const_string "yes")]
+              (const_string "no")))])
 
 ;; See the comment above "divmod<mode>4_mips16" for the split timing.
 (define_insn_and_split "udivmod<mode>4_mips16"
@@ -2831,7 +2950,7 @@
   "cse_not_expected"
   [(const_int 0)]
 {
-  emit_insn (gen_udivmod<mode>4_split (operands[3], operands[1], operands[2]));
+  emit_insn (gen_udivmod<mode>4_split (operands[3], operands[1], operands[2], operands[4]));
   emit_move_insn (operands[0], operands[4]);
   DONE;
 }
@@ -2842,21 +2961,22 @@
 (define_expand "<u>divmod<mode>4_split"
   [(set (match_operand:GPR 0 "register_operand")
 	(any_mod:GPR (match_operand:GPR 1 "register_operand")
-		     (match_operand:GPR 2 "register_operand")))]
+		     (match_operand:GPR 2 "register_operand")))
+   (clobber (match_operand:GPR 3 "lo_operand"))]
   ""
 {
   rtx hilo;
 
   if (TARGET_64BIT)
     {
-      hilo = gen_rtx_REG (TImode, MD_REG_FIRST);
+      hilo = gen_rtx_REG (TImode, MD_REG_P ( REGNO (operands[3])) ? MD_REG_FIRST : MD1_REG_FIRST);
       emit_insn (gen_<u>divmod<mode>4_hilo_ti (hilo, operands[1],
 					       operands[2]));
       emit_insn (gen_mfhi<mode>_ti (operands[0], hilo));
     }
   else
     {
-      hilo = gen_rtx_REG (DImode, MD_REG_FIRST);
+      hilo = gen_rtx_REG (DImode, MD_REG_P ( REGNO (operands[3])) ? MD_REG_FIRST : MD1_REG_FIRST);
       emit_insn (gen_<u>divmod<mode>4_hilo_di (hilo, operands[1],
 					       operands[2]));
       emit_insn (gen_mfhi<mode>_di (operands[0], hilo));
@@ -2865,15 +2985,23 @@
 })
 
 (define_insn "<u>divmod<GPR:mode>4_hilo_<HILO:mode>"
-  [(set (match_operand:HILO 0 "muldiv_target_operand" "=x")
+  [(set (match_operand:HILO 0 "muldiv_target_operand" "=x,xwr")
 	(unspec:HILO
-	  [(any_div:GPR (match_operand:GPR 1 "register_operand" "d")
-			(match_operand:GPR 2 "register_operand" "d"))]
+	  [(any_div:GPR (match_operand:GPR 1 "register_operand" "d,d")
+			(match_operand:GPR 2 "register_operand" "d,d"))]
 	  UNSPEC_SET_HILO))]
   "ISA_HAS_<GPR:D>DIV"
-  { return mips_output_division ("<GPR:d>div<u>\t%.,%1,%2", operands); }
-  [(set_attr "type" "idiv")
-   (set_attr "mode" "<GPR:MODE>")])
+  { return mips_output_division (TARGET_MIPS5900 ? "<GPR:d>div<u>%H0\t%.,%1,%2" : "<GPR:d>div<u>\t%.,%1,%2", operands); }
+  [(set_attr "type" "idiv,idiv")
+   (set_attr "mode" "<GPR:MODE>")
+   (set (attr "enabled")
+        (cond [(and (eq_attr "alternative" "0")
+                    (eq_attr "cpu" "!r5900"))
+                  (const_string "yes")
+               (and (eq_attr "alternative" "1")
+                    (eq_attr "cpu" "r5900"))
+                  (const_string "yes")]
+              (const_string "no")))])
 
 ;; Integer division and modulus.
 
@@ -5109,26 +5237,42 @@
 ;; instead of MFHI.  This avoids both the normal MIPS III hi/lo hazards
 ;; and the errata related to -mfix-vr4130.
 (define_insn "mfhi<GPR:mode>_<HILO:mode>"
-  [(set (match_operand:GPR 0 "register_operand" "=d")
-	(unspec:GPR [(match_operand:HILO 1 "hilo_operand" "x")]
+  [(set (match_operand:GPR 0 "register_operand" "=d,d")
+	(unspec:GPR [(match_operand:HILO 1 "hilo_operand" "x,xwr")]
 		    UNSPEC_MFHI))]
   ""
-  { return ISA_HAS_MACCHI ? "<GPR:d>macchi\t%0,%.,%." : "mfhi\t%0"; }
-  [(set_attr "type" "mfhi")
-   (set_attr "mode" "<GPR:MODE>")])
+  { return ISA_HAS_MACCHI ? "<GPR:d>macchi\t%0,%.,%." : TARGET_MIPS5900 ? "mfhi%H1\t%0" : "mfhi\t%0"; }
+  [(set_attr "type" "mfhi,mfhi1")
+   (set_attr "mode" "<GPR:MODE>")
+   (set (attr "enabled")
+        (cond [(and (eq_attr "alternative" "0")
+                    (eq_attr "cpu" "!r5900"))
+                  (const_string "yes")
+               (and (eq_attr "alternative" "1")
+                    (eq_attr "cpu" "r5900"))
+                  (const_string "yes")]
+              (const_string "no")))])
 
 ;; Set the high part of a HI/LO value, given that the low part has
 ;; already been set.  See mips_hard_regno_mode_ok_p for the reason
 ;; why we can't just use (reg:GPR HI_REGNUM).
 (define_insn "mthi<GPR:mode>_<HILO:mode>"
-  [(set (match_operand:HILO 0 "register_operand" "=x")
-	(unspec:HILO [(match_operand:GPR 1 "reg_or_0_operand" "dJ")
-		      (match_operand:GPR 2 "register_operand" "l")]
+  [(set (match_operand:HILO 0 "register_operand" "=x,xwr")
+	(unspec:HILO [(match_operand:GPR 1 "reg_or_0_operand" "dJ,dJ")
+		      (match_operand:GPR 2 "register_operand" "l,lwl")]
 		     UNSPEC_MTHI))]
   ""
-  "mthi\t%z1"
-  [(set_attr "type" "mthi")
-   (set_attr "mode" "SI")])
+  { return TARGET_MIPS5900 ? "mthi%H0\t%z1" : "mthi\t%z1"; }
+  [(set_attr "type" "mthi,mthi1")
+   (set_attr "mode" "SI")
+   (set (attr "enabled")
+        (cond [(and (eq_attr "alternative" "0")
+                    (eq_attr "cpu" "!r5900"))
+                  (const_string "yes")
+               (and (eq_attr "alternative" "1")
+                    (eq_attr "cpu" "r5900"))
+                  (const_string "yes")]
+              (const_string "no")))])
 
 ;; Emit a doubleword move in which exactly one of the operands is
 ;; a floating-point register.  We can't just emit two normal moves
