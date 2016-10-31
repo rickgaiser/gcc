@@ -371,6 +371,10 @@ typedef rtx (*mulsidi3_gen_fn) (rtx, rtx, rtx);
 extern mulsidi3_gen_fn mips_mulsidi3_gen_fn (enum rtx_code);
 #endif
 
+<<<<<<< c19545afef6dbf249ab9b9a492ff45cd4784ac09
 extern void mips_register_frame_header_opt (void);
+=======
+extern int r5900_emit_vcond_expr (rtx dest, rtx op1, rtx op2, rtx cond, rtx cc_op0, rtx cc_op1);
+>>>>>>> Apply gcc-5.3.0-mmi.patch from sp193
 
 #endif /* ! GCC_MIPS_PROTOS_H */

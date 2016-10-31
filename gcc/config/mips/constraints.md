@@ -48,6 +48,9 @@
   "The concatenated @code{hi1} and @code{lo1} registers.  Use this register
    to store doubleword values.")
 
+(define_register_constraint "ws" "SA_REG"
+  "The R5900 @code{sa} register.")
+
 (define_register_constraint "b" "ALL_REGS"
   "@internal")
 
