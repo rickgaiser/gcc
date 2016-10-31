@@ -766,6 +766,8 @@ case "${target}" in
     ;;
   mips*-*-linux*)
     ;;
+  mipsel-*-irx*)
+    ;;
   powerpc*-*-linux*)
     ;;
   powerpc-*-darwin*)
