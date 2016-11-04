@@ -1491,6 +1491,7 @@ FP_ASM_SPEC "\
 #endif
 
 /* The R5900 has 128-bit registers.  */
+#define MAX_UNITS_PER_WORD_R5900 16
 #define MAX_BITS_PER_WORD_R5900 128
 
 /* For MIPS, width of a floating point register.  */
@@ -1692,9 +1693,10 @@ FP_ASM_SPEC "\
    - 2 dummy entries that were used at various times in the past.
    - 6 DSP accumulator registers (3 hi-lo pairs) for MIPS DSP ASE
    - 6 DSP control registers
-   - 2 accumulator registers for the R5900's second pipeline (hi1 and lo1)   */
+   - 2 accumulator registers for the R5900's second pipeline (hi1 and lo1)
+   - 1 Shift Amount (SA) register for the R5900's Funnel Shift  */
 
-#define FIRST_PSEUDO_REGISTER 190
+#define FIRST_PSEUDO_REGISTER 191
 
 /* By default, fix the kernel registers ($26 and $27), the global
    pointer ($28) and the stack pointer ($29).  This can change
@@ -1723,8 +1725,8 @@ FP_ASM_SPEC "\
   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,			\
   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,			\
   /* 6 DSP accumulator registers & 6 control registers,			\
-     and hi1/lo1 for the R5900  */					\
-  0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0				\
+     hi1/lo1 and SA for the R5900  */					\
+  0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1				\
 }
 
 
@@ -1756,8 +1758,8 @@ FP_ASM_SPEC "\
   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,			\
   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,			\
   /* 6 DSP accumulator registers & 6 control registers,			\
-     and hi1/lo1 for the R5900  */					\
-  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1				\
+     hi1/lo1 and SA for the R5900  */					\
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1				\
 }
 
 
@@ -1782,8 +1784,8 @@ FP_ASM_SPEC "\
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,			\
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,			\
   /* 6 DSP accumulator registers & 6 control registers,			\
-     and hi1/lo1 for the R5900  */					\
-  1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1				\
+     hi1/lo1 and SA for the R5900  */					\
+  1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1				\
 }
 
 /* Internal macros to classify a register number as to whether it's a
@@ -1848,6 +1850,8 @@ FP_ASM_SPEC "\
 #define MD1_REG_FIRST 188
 #define MD1_REG_LAST  189
 #define MD1_REG_NUM   (MD1_REG_LAST - MD1_REG_FIRST + 1)
+
+#define SA_REGNUM	190
 
 #define AT_REGNUM	(GP_REG_FIRST + 1)
 #define HI_REGNUM	(TARGET_BIG_ENDIAN ? MD_REG_FIRST : MD_REG_FIRST + 1)
@@ -1935,10 +1939,14 @@ FP_ASM_SPEC "\
   mips_hard_regno_caller_save_mode (REGNO, NREGS, MODE)
 
 /* Odd-numbered single-precision registers are not considered callee-saved
-   for o32 FPXX as they will be clobbered when run on an FR=1 FPU.  */
+   for o32 FPXX as they will be clobbered when run on an FR=1 FPU.
+
+   The R5900 has 128-bit registers. The upper 64-bits of each GPR
+   is used for MMI, but is not callee-saved.  */
 #define HARD_REGNO_CALL_PART_CLOBBERED(REGNO, MODE)			\
-  (TARGET_FLOATXX && hard_regno_nregs[REGNO][MODE] == 1			\
-   && FP_REG_P (REGNO) && ((REGNO) & 1))
+  ((TARGET_FLOATXX && hard_regno_nregs[REGNO][MODE] == 1			\
+    && FP_REG_P (REGNO) && ((REGNO) & 1))					\
+   || (TARGET_MIPS5900 && GET_MODE_SIZE (MODE) >= UNITS_PER_WORD))
 
 #define MODES_TIEABLE_P mips_modes_tieable_p
 
@@ -2068,6 +2076,7 @@ enum reg_class
   ST_REGS,			/* status registers (fp status) */
   DSP_ACC_REGS,			/* DSP accumulator registers */
   ACC_REGS,			/* Hi/Lo and DSP accumulator registers */
+  SA_REG,			/* R5900 SA register */
   FRAME_REGS,			/* $arg and $frame */
   GR_AND_MD0_REGS,		/* union classes */
   GR_AND_MD1_REGS,
@@ -2115,6 +2124,7 @@ enum reg_class
   "ST_REGS",								\
   "DSP_ACC_REGS",							\
   "ACC_REGS",								\
+  "SA_REG",								\
   "FRAME_REGS",								\
   "GR_AND_MD0_REGS",							\
   "GR_AND_MD1_REGS",							\
@@ -2163,6 +2173,7 @@ enum reg_class
   { 0x00000000, 0x00000000, 0x000007f8, 0x00000000, 0x00000000, 0x00000000 },	/* ST_REGS */		\
   { 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x003f0000 },	/* DSP_ACC_REGS */	\
   { 0x00000000, 0x00000000, 0x00000003, 0x00000000, 0x00000000, 0x303f0000 },	/* ACC_REGS */		\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x40000000 },	/* SA_REG */		\
   { 0x00000000, 0x00000000, 0x00006000, 0x00000000, 0x00000000, 0x00000000 },	/* FRAME_REGS */	\
   { 0xffffffff, 0x00000000, 0x00000001, 0x00000000, 0x00000000, 0x00000000 },	/* GR_AND_MD0_REGS */	\
   { 0xffffffff, 0x00000000, 0x00000002, 0x00000000, 0x00000000, 0x00000000 },	/* GR_AND_MD1_REGS */	\
@@ -2171,7 +2182,7 @@ enum reg_class
   { 0xffffffff, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x20000000 },	/* GR_AND_MD1_1_REGS */	\
   { 0xffffffff, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x30000000 },	/* GR_AND_MD_1_REGS */	\
   { 0xffffffff, 0x00000000, 0x00000003, 0x00000000, 0x00000000, 0x303f0000 },	/* GR_AND_ACC_REGS */	\
-  { 0xffffffff, 0xffffffff, 0xffff67ff, 0xffffffff, 0xffffffff, 0x3fffffff }	/* ALL_REGS */		\
+  { 0xffffffff, 0xffffffff, 0xffff67ff, 0xffffffff, 0xffffffff, 0x7fffffff }	/* ALL_REGS */		\
 }
 
 
@@ -2765,7 +2776,7 @@ typedef struct mips_args {
   "$c3r16","$c3r17","$c3r18","$c3r19","$c3r20","$c3r21","$c3r22","$c3r23", \
   "$c3r24","$c3r25","$c3r26","$c3r27","$c3r28","$c3r29","$c3r30","$c3r31", \
   "$ac1hi","$ac1lo","$ac2hi","$ac2lo","$ac3hi","$ac3lo","$dsp_po","$dsp_sc", \
-  "$dsp_ca","$dsp_ou","$dsp_cc","$dsp_ef", "hi1", "lo1" }
+  "$dsp_ca","$dsp_ou","$dsp_cc","$dsp_ef", "hi1", "lo1", "SA" }
 
 /* List the "software" names for each register.  Also list the numerical
    names for $fp and $sp.  */
