@@ -244,11 +244,13 @@
 
 (define_predicate "lo_operand"
   (and (match_code "reg")
-       (match_test "REGNO (op) == LO_REGNUM")))
+       (ior (match_test "REGNO (op) == LO_REGNUM")
+            (match_test "REGNO (op) == LO1_REGNUM"))))
 
 (define_predicate "hilo_operand"
   (and (match_code "reg")
-       (match_test "MD_REG_P (REGNO (op))")))
+       (ior (match_test "MD_REG_P (REGNO (op))")
+            (match_test "MD1_REG_P (REGNO (op))"))))
 
 (define_predicate "fcc_reload_operand"
   (and (match_code "reg,subreg")
