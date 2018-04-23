@@ -46,6 +46,6 @@
 extern "C" void
 __cxa_pure_virtual (void)
 {
-  writestr ("pure virtual method called\n");
+//  writestr ("pure virtual method called\n");
   std::terminate ();
 }

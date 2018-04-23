@@ -358,12 +358,18 @@ copy_decl_for_inlining (decl, from_fn, to_fn)
   /* Copy the declaration.  */
   if (TREE_CODE (decl) == PARM_DECL || TREE_CODE (decl) == RESULT_DECL)
     {
+      tree type;
+      type = TREE_TYPE(decl);
+
       /* For a parameter, we must make an equivalent VAR_DECL, not a
 	 new PARM_DECL.  */
       copy = build_decl (VAR_DECL, DECL_NAME (decl), TREE_TYPE (decl));
       TREE_ADDRESSABLE (copy) = TREE_ADDRESSABLE (decl);
       TREE_READONLY (copy) = TREE_READONLY (decl);
       TREE_THIS_VOLATILE (copy) = TREE_THIS_VOLATILE (decl);
+
+      if (TYPE_RESTRICT(type))
+        DECL_POINTER_ALIAS_SET (copy) = -2;
     }
   else
     {

@@ -3469,6 +3469,18 @@ rest_of_compilation (decl)
 
   convert_to_eh_region_ranges ();
 
+#ifdef MACHINE_DEPENDENT_REORG_FINAL
+  timevar_push (TV_MACH_DEP);
+  open_dump_file (DFI_mach, decl);
+
+  MACHINE_DEPENDENT_REORG_FINAL (insns);
+
+  close_dump_file (DFI_mach, print_rtl, insns);
+  timevar_pop (TV_MACH_DEP);
+
+  ggc_collect ();
+#endif
+
   /* Shorten branches.  */
   timevar_push (TV_SHORTEN_BRANCH);
   shorten_branches (get_insns ());

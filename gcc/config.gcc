@@ -1553,6 +1553,10 @@ i[34567]86-*-mingw32*)
 		*minwg32msv* | *mingw32*)
 			;;
 	esac
+	if test x$pass1done = xyes && test x$pass2done = x
+	then
+		host_to_target_tmake_file=i386/t-mingw32
+	fi
 	;;
 i[34567]86-*-uwin*)
 	tm_file=i386/uwin.h
@@ -2387,6 +2391,13 @@ mips*-*-linux*)				# Linux MIPS, either endian.
 	esac
 	tmake_file="t-slibgcc-elf-ver t-linux mips/t-linux"
 	extra_parts="crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o"
+	case $machine in
+	mips*r5900*-*)			# Linux for r5900 (EE)
+		tm_file="$tm_file mips/r5900.h"
+		tmake_file="$tmake_file t-r5900"
+		extra_headers="core-mmi.h core-vumm.h"
+		;;
+	esac
 	gnu_ld=yes
 	gas=yes
 	;;
@@ -2582,6 +2593,24 @@ mips-*-riscos[56789]*)		# Default MIPS RISC-OS 5.0.
 	then
 		use_collect2=yes
 	fi
+	;;
+mips*r5900*-*-elf*)			# MIPS r5900 ELF, either endian
+	tm_file="dbxelf.h elfos.h mips/r5900.h"
+	tmake_file=mips/t-r5900
+	case $machine in
+	mips*el-*)
+		tm_file="mips/little.h $tm_file"
+		;;
+	esac
+	gnu_ld=yes
+	gas=yes
+	extra_headers="core-mmi.h core-vumm.h"
+	;;
+mipsel-*-irx)
+	tm_file="mips/elfl.h libgloss.h"
+	tmake_file=mips/t-irx
+	target_cpu_default="MASK_GAS|MASK_SOFT_FLOAT"
+	fixincludes=Makefile.in
 	;;
 mipsel-*-ecoff*)
 	tm_file=mips/ecoffl.h
@@ -3673,5 +3702,8 @@ else
 		host_extra_objs=$extra_host_objs
 		host_exeext=$exeext
 		pass2done=yes
+	else
+		tmake_file="$tmake_file $host_to_target_tmake_file"
 	fi
 fi
+

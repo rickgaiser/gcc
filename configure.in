@@ -980,6 +980,9 @@ case "${target}" in
   mips*-*-linux*)
     noconfigdirs="$noconfigdirs target-libffi"
     ;;
+  mipsel-*-irx*)
+    noconfigdirs="$noconfigdirs target-libiberty target-newlib target-libgloss target-libstdc++-v3 ${libgcj}"
+    ;;
   mips*-*-*)
     noconfigdirs="$noconfigdirs gprof ${libgcj}"
     ;;

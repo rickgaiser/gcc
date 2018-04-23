@@ -236,6 +236,7 @@ case $basic_machine in
 	| i370 | i860 | i960 | ia64 \
 	| ip2k \
 	| m32r | m68000 | m68k | m88k | mcore \
+	| mips64r5900 | mips64r5900el \
 	| mips | mipsbe | mipseb | mipsel | mipsle \
 	| mips16 \
 	| mips64 | mips64el \
@@ -308,6 +309,7 @@ case $basic_machine in
 	| m32r-* \
 	| m68000-* | m680[012346]0-* | m68360-* | m683?2-* | m68k-* \
 	| m88110-* | m88k-* | mcore-* \
+	| mips64r5900-* | mips64r5900el-* \
 	| mips-* | mipsbe-* | mipseb-* | mipsel-* | mipsle-* \
 	| mips16-* \
 	| mips64-* | mips64el-* \
@@ -594,6 +596,10 @@ case $basic_machine in
 		basic_machine=i386-unknown
 		os=-vsta
 		;;
+	iop)
+		basic_machine=mipsel-scei
+		os=-irx
+		;;
 	iris | iris4d)
 		basic_machine=mips-sgi
 		case $os in
@@ -629,6 +635,16 @@ case $basic_machine in
 	*mint | -mint[0-9]* | *MiNT | *MiNT[0-9]*)
 		basic_machine=m68k-atari
 		os=-mint
+		;;
+	mipsEE* | ee | ps2)
+		basic_machine=mips64r5900el-scei
+		case $os in
+		    -linux*)
+			;;
+		    *)
+			os=-elf
+			;;
+		esac
 		;;
 	mips3*-*)
 		basic_machine=`echo $basic_machine | sed -e 's/mips3/mips64/'`
@@ -1118,7 +1134,8 @@ case $os in
 	      | -storm-chaos* | -tops10* | -tenex* | -tops20* | -its* \
 	      | -os2* | -vos* | -palmos* | -uclinux* | -nucleus* \
 	      | -morphos* | -superux* | -rtmk* | -rtmk-nova* | -windiss* \
-	      | -powermax* | -dnix* | -microbsd*)
+	      | -powermax* | -dnix* | -microbsd* \
+	      | -irx* )
 	# Remember, each alternative MUST END IN *, to match a version number.
 		;;
 	-qnx*)

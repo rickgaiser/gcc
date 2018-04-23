@@ -1336,6 +1336,9 @@ type_for_size (bits, unsignedp)
   if (bits <= TYPE_PRECISION (intDI_type_node))
     return unsignedp ? unsigned_intDI_type_node : intDI_type_node;
 
+   if (bits <= TYPE_PRECISION (intTI_type_node))
+    return unsignedp ? unsigned_intTI_type_node : intTI_type_node;
+
   return 0;
 }
 
@@ -1379,10 +1382,8 @@ type_for_mode (mode, unsignedp)
   if (mode == DImode)
     return unsignedp ? unsigned_intDI_type_node : intDI_type_node;
 
-#if HOST_BITS_PER_WIDE_INT >= 64
   if (mode == TYPE_MODE (intTI_type_node))
     return unsignedp ? unsigned_intTI_type_node : intTI_type_node;
-#endif
 
   if (mode == TYPE_MODE (float_type_node))
     return float_type_node;
@@ -1449,10 +1450,8 @@ unsigned_type (type)
     return long_long_unsigned_type_node;
   if (type1 == widest_integer_literal_type_node)
     return widest_unsigned_literal_type_node;
-#if HOST_BITS_PER_WIDE_INT >= 64
   if (type1 == intTI_type_node)
     return unsigned_intTI_type_node;
-#endif
   if (type1 == intDI_type_node)
     return unsigned_intDI_type_node;
   if (type1 == intSI_type_node)
@@ -1484,10 +1483,8 @@ signed_type (type)
     return long_long_integer_type_node;
   if (type1 == widest_unsigned_literal_type_node)
     return widest_integer_literal_type_node;
-#if HOST_BITS_PER_WIDE_INT >= 64
   if (type1 == unsigned_intTI_type_node)
     return intTI_type_node;
-#endif
   if (type1 == unsigned_intDI_type_node)
     return intDI_type_node;
   if (type1 == unsigned_intSI_type_node)
@@ -1527,10 +1524,8 @@ signed_or_unsigned_type (unsignedp, type)
     return (unsignedp ? widest_unsigned_literal_type_node
 	    : widest_integer_literal_type_node);
 
-#if HOST_BITS_PER_WIDE_INT >= 64
   if (TYPE_PRECISION (type) == TYPE_PRECISION (intTI_type_node))
     return unsignedp ? unsigned_intTI_type_node : intTI_type_node;
-#endif
   if (TYPE_PRECISION (type) == TYPE_PRECISION (intDI_type_node))
     return unsignedp ? unsigned_intDI_type_node : intDI_type_node;
   if (TYPE_PRECISION (type) == TYPE_PRECISION (intSI_type_node))
@@ -2576,16 +2571,12 @@ c_common_nodes_and_builtins ()
   pushdecl (build_decl (TYPE_DECL, NULL_TREE, intHI_type_node));
   pushdecl (build_decl (TYPE_DECL, NULL_TREE, intSI_type_node));
   pushdecl (build_decl (TYPE_DECL, NULL_TREE, intDI_type_node));
-#if HOST_BITS_PER_WIDE_INT >= 64
   pushdecl (build_decl (TYPE_DECL, get_identifier ("__int128_t"), intTI_type_node));
-#endif
   pushdecl (build_decl (TYPE_DECL, NULL_TREE, unsigned_intQI_type_node));
   pushdecl (build_decl (TYPE_DECL, NULL_TREE, unsigned_intHI_type_node));
   pushdecl (build_decl (TYPE_DECL, NULL_TREE, unsigned_intSI_type_node));
   pushdecl (build_decl (TYPE_DECL, NULL_TREE, unsigned_intDI_type_node));
-#if HOST_BITS_PER_WIDE_INT >= 64
   pushdecl (build_decl (TYPE_DECL, get_identifier ("__uint128_t"), unsigned_intTI_type_node));
-#endif
 
   /* Create the widest literal types.  */
   widest_integer_literal_type_node

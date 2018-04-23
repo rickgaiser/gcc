@@ -26,6 +26,9 @@
 # include <config.h>
 #endif
 
+/* XXX :: Should find the correct way for other platforms that have mempcpy. this is a cygwin hack! */
+#undef HAVE_MEMPCPY
+
 /* GCC LOCAL: we don't need NLS here.  */
 #undef ENABLE_NLS
 /* GCC LOCAL: to handle defining alloca.  */
