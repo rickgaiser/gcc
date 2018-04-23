@@ -7,7 +7,7 @@
 --                                 B o d y                                  --
 --                         (Version for IRIX/MIPS)                          --
 --                                                                          --
---                            $Revision: 1.2 $
+--                            $Revision: 1.2.10.1 $
 --                                                                          --
 --          Copyright (C) 1999-2001 Free Software Foundation, Inc.          --
 --                                                                          --

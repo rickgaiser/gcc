@@ -6,7 +6,7 @@
  *                                                                          *
  *                          C Implementation File                           *
  *                                                                          *
- *                            $Revision: 1.2 $
+ *                            $Revision: 1.2.10.1 $
  *                                                                          *
  *           Copyright (C) 1992-2001 Free Software Foundation, Inc.         *
  *                                                                          *

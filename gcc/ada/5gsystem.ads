@@ -7,7 +7,7 @@
 --                                 S p e c                                  --
 --                           (SGI Irix, n32 ABI)                            --
 --                                                                          --
---                            $Revision: 1.1 $
+--                            $Revision: 1.1.16.1 $
 --                                                                          --
 --          Copyright (C) 1992-2001 Free Software Foundation, Inc.          --
 --                                                                          --
