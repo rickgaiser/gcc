@@ -36,8 +36,16 @@
   "The @code{lo} register.  Use this register to store values that are
    no bigger than a word.")
 
+(define_register_constraint "wl" "TARGET_BIG_ENDIAN ? MD1_1_REG : MD1_0_REG"
+  "The @code{lo1} register.  Use this register to store values that are
+   no bigger than a word.")
+
 (define_register_constraint "x" "MD_REGS"
   "The concatenated @code{hi} and @code{lo} registers.  Use this register
+   to store doubleword values.")
+
+(define_register_constraint "wr" "MD1_REGS"
+  "The concatenated @code{hi1} and @code{lo1} registers.  Use this register
    to store doubleword values.")
 
 (define_register_constraint "b" "ALL_REGS"
